@@ -1,19 +1,31 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"log"
 	"math/big"
+	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
+	"strconv"
+	"syscall"
 	"time"
 
+	"github.com/mikaelweiss/eclean/server/internal/abuse"
+	"github.com/mikaelweiss/eclean/server/internal/api"
+	"github.com/mikaelweiss/eclean/server/internal/classifier"
 	"github.com/mikaelweiss/eclean/server/internal/config"
 	"github.com/mikaelweiss/eclean/server/internal/db"
+	"github.com/mikaelweiss/eclean/server/internal/imap"
 )
 
 var Version = "0.1.0"
@@ -118,17 +130,69 @@ func runPair(args []string) {
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	dataDir := fs.String("data-dir", "", "data directory")
+	port := fs.Int("port", config.DefaultListenPort, "HTTPS listen port")
 	_ = fs.Parse(args)
 
 	dir := resolveDataDir(*dataDir)
 	store, err := db.Open(dir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
 
-	fmt.Printf("eclean %s initialized at %s\n", Version, dir)
+	cert, fingerprint, err := api.LoadOrGenerateTLS(dir)
+	if err != nil {
+		log.Fatalf("init TLS: %v", err)
+	}
+	_ = store.SetRawSetting("tls_fingerprint", fingerprint, false)
+	_ = store.SetRawSetting("listen_port", strconv.Itoa(*port), false)
+
+	hub := api.NewHub()
+	engine := classifier.NewEngine(store, nil)
+	abuseSvc := abuse.NewService(store, nil, nil)
+	watcher := imap.NewWatcher(store, engine, abuseSvc)
+	scanner := imap.NewScanner(store, engine, abuseSvc)
+	apiServer := api.NewServer(store, watcher, scanner, abuseSvc, hub, Version, fingerprint)
+
+	abuseSvc.OnQueueChanged = func(pendingCount int) {
+		hub.Publish("abuse_queue", map[string]int{"pending_count": pendingCount})
+	}
+	watcher.OnEventProcessed = func(ev db.EmailEvent) {
+		hub.Publish("email_processed", ev)
+	}
+	watcher.OnStatusChanged = func(_ imap.StatusSnapshot) {
+		hub.Publish("health", apiServer.BuildHealthPayload())
+	}
+	scanner.OnProgress = func(job db.ScanJob) {
+		hub.Publish("scan_progress", job)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go watcher.Run(ctx)
+
+	httpServer := &http.Server{
+		Addr:    fmt.Sprintf("0.0.0.0:%d", *port),
+		Handler: apiServer.Handler(),
+		TLSConfig: &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		},
+		ReadHeaderTimeout: 15 * time.Second,
+	}
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpServer.Shutdown(shutdownCtx)
+	}()
+
+	log.Printf("eclean %s listening on https://0.0.0.0:%d (TLS SHA-256: %s)", Version, *port, fingerprint)
+	if err := httpServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Fatalf("https server error: %v", err)
+	}
 }
 
 func generateSixDigitCode() (string, error) {
