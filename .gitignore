@@ -1,0 +1,18 @@
+# Build artifacts
+macos/EClean/Resources/Binaries/eclean-*
+macos/EClean.xcodeproj/xcuserdata/
+macos/build/
+.build/
+*.xcarchive
+*.dmg
+
+# Local server runtime data
+*.db
+*.db-shm
+*.db-wal
+master.key
+server.crt
+server.key
+
+# macOS
+.DS_Store
