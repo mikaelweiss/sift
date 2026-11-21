@@ -113,7 +113,7 @@ final class HostDiscovery {
         }.value
     }
 
-    private static func parseTailscaleStatusJSON(_ data: Data) -> [DiscoveredHost] {
+    nonisolated private static func parseTailscaleStatusJSON(_ data: Data) -> [DiscoveredHost] {
         struct TSStatus: Decodable {
             struct Peer: Decodable {
                 let HostName: String?
