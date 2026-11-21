@@ -15,6 +15,9 @@ struct SettingsSheet: View {
 
     @State private var selectedSection: SettingsSection = .filtering
     @State private var draftSettings = AppSettings()
+    @State private var isHydrated = false
+    @State private var autoSaveTask: Task<Void, Never>?
+
     @State private var imapPasswordInput = ""
     @State private var aiAPIKeyInput = ""
     @State private var smtpPasswordInput = ""
@@ -23,8 +26,8 @@ struct SettingsSheet: View {
     @State private var newCategoryDescription = ""
     @State private var newAllowlistPattern = ""
 
-    @State private var statusBanner: String?
-    @State private var isSaving = false
+    @State private var errorMessage: String?
+    @State private var infoMessage: String?
     @State private var isTestingIMAP = false
     @State private var isTestingAI = false
     @State private var isSendingTest = false
@@ -55,6 +58,26 @@ struct SettingsSheet: View {
 
             Divider()
 
+            if let errorMessage {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Text(errorMessage)
+                        .font(.callout)
+                        .foregroundStyle(.red)
+                    Spacer()
+                    Button("Dismiss") {
+                        self.errorMessage = nil
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.caption)
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+                .background(Color.red.opacity(0.1))
+                Divider()
+            }
+
             Group {
                 switch selectedSection {
                 case .filtering:
@@ -70,10 +93,10 @@ struct SettingsSheet: View {
             .padding(16)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-            if let statusBanner {
+            if let infoMessage {
                 Divider()
                 HStack {
-                    Text(statusBanner)
+                    Text(infoMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -86,6 +109,28 @@ struct SettingsSheet: View {
         .onAppear {
             draftSettings = appState.settings
             testRecipient = appState.settings.abuseFromEmail
+            DispatchQueue.main.async {
+                isHydrated = true
+            }
+        }
+        .onDisappear {
+            if autoSaveTask != nil {
+                autoSaveTask?.cancel()
+                autoSaveTask = nil
+                Task { await persistSettings() }
+            }
+        }
+        .onChange(of: draftSettings) { _, _ in
+            scheduleAutoSave(delayMs: 350)
+        }
+        .onChange(of: imapPasswordInput) { _, _ in
+            scheduleAutoSave(delayMs: 700)
+        }
+        .onChange(of: aiAPIKeyInput) { _, _ in
+            scheduleAutoSave(delayMs: 700)
+        }
+        .onChange(of: smtpPasswordInput) { _, _ in
+            scheduleAutoSave(delayMs: 700)
         }
     }
 
@@ -250,15 +295,6 @@ struct SettingsSheet: View {
                     }
                     .padding(8)
                 }
-
-                HStack {
-                    Spacer()
-                    Button(isSaving ? "Saving..." : "Save Changes") {
-                        Task { await saveSettings() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isSaving)
-                }
             }
             .padding(4)
         }
@@ -323,11 +359,6 @@ struct SettingsSheet: View {
                             }
                             .buttonStyle(.bordered)
                             Spacer()
-                            Button("Save Credentials") {
-                                Task { await saveSettings() }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isSaving)
                         }
                     }
                     .padding(8)
@@ -354,11 +385,6 @@ struct SettingsSheet: View {
                             }
                             .buttonStyle(.bordered)
                             Spacer()
-                            Button("Save Credentials") {
-                                Task { await saveSettings() }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isSaving)
                         }
                     }
                     .padding(8)
@@ -441,10 +467,19 @@ struct SettingsSheet: View {
         .padding(4)
     }
 
-    private func saveSettings() async {
+    private func scheduleAutoSave(delayMs: UInt64) {
+        guard isHydrated else { return }
+        autoSaveTask?.cancel()
+        autoSaveTask = Task {
+            try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            guard !Task.isCancelled else { return }
+            await persistSettings()
+            autoSaveTask = nil
+        }
+    }
+
+    private func persistSettings() async {
         guard let client = appState.apiClient else { return }
-        isSaving = true
-        defer { isSaving = false }
         var payload = draftSettings
         payload.abuseEnabled = true
         if !imapPasswordInput.isEmpty { payload.imapPassword = imapPasswordInput }
@@ -453,13 +488,9 @@ struct SettingsSheet: View {
         do {
             let updated = try await client.updateSettings(payload)
             appState.settings = updated
-            draftSettings = updated
-            imapPasswordInput = ""
-            aiAPIKeyInput = ""
-            smtpPasswordInput = ""
-            statusBanner = "Settings saved."
+            errorMessage = nil
         } catch {
-            statusBanner = "Save failed: \(error.localizedDescription)"
+            errorMessage = "Failed to save settings: \(error.localizedDescription)"
         }
     }
 
@@ -467,12 +498,19 @@ struct SettingsSheet: View {
         guard let client = appState.apiClient else { return }
         isSendingTest = true
         defer { isSendingTest = false }
-        await saveSettings()
+        autoSaveTask?.cancel()
+        autoSaveTask = nil
+        await persistSettings()
         do {
             let res = try await client.testAbuseSMTP(toEmail: testRecipient.trimmingCharacters(in: .whitespaces))
-            statusBanner = res.ok ? "Test email sent successfully." : "SMTP test failed: \(res.error)"
+            if res.ok {
+                errorMessage = nil
+                infoMessage = "Test email sent successfully."
+            } else {
+                errorMessage = "SMTP test failed: \(res.error)"
+            }
         } catch {
-            statusBanner = "SMTP test failed: \(error.localizedDescription)"
+            errorMessage = "SMTP test failed: \(error.localizedDescription)"
         }
     }
 
@@ -487,9 +525,14 @@ struct SettingsSheet: View {
                 username: draftSettings.imapUsername,
                 password: imapPasswordInput
             )
-            statusBanner = res.ok ? "iCloud IMAP connection succeeded." : "IMAP test failed: \(res.error)"
+            if res.ok {
+                errorMessage = nil
+                infoMessage = "iCloud IMAP connection succeeded."
+            } else {
+                errorMessage = "IMAP test failed: \(res.error)"
+            }
         } catch {
-            statusBanner = "IMAP test failed: \(error.localizedDescription)"
+            errorMessage = "IMAP test failed: \(error.localizedDescription)"
         }
     }
 
@@ -503,9 +546,14 @@ struct SettingsSheet: View {
                 apiKey: aiAPIKeyInput,
                 model: draftSettings.aiModel
             )
-            statusBanner = res.ok ? "Jev API key verified." : "AI test failed: \(res.error)"
+            if res.ok {
+                errorMessage = nil
+                infoMessage = "Jev API key verified."
+            } else {
+                errorMessage = "AI test failed: \(res.error)"
+            }
         } catch {
-            statusBanner = "AI test failed: \(error.localizedDescription)"
+            errorMessage = "AI test failed: \(error.localizedDescription)"
         }
     }
 
@@ -514,9 +562,9 @@ struct SettingsSheet: View {
         do {
             _ = try await client.updateCategory(cat)
             appState.categories = try await client.listCategories()
-            statusBanner = "Updated \(cat.name)."
+            errorMessage = nil
         } catch {
-            statusBanner = "Failed: \(error.localizedDescription)"
+            errorMessage = "Failed to save \(cat.name): \(error.localizedDescription)"
         }
     }
 
@@ -532,9 +580,9 @@ struct SettingsSheet: View {
             newCategoryName = ""
             newCategoryDescription = ""
             appState.categories = try await client.listCategories()
-            statusBanner = "Added custom category."
+            errorMessage = nil
         } catch {
-            statusBanner = "Failed: \(error.localizedDescription)"
+            errorMessage = "Failed to add category: \(error.localizedDescription)"
         }
     }
 
@@ -543,9 +591,9 @@ struct SettingsSheet: View {
         do {
             try await client.deleteCategory(id: id)
             appState.categories = try await client.listCategories()
-            statusBanner = "Deleted category."
+            errorMessage = nil
         } catch {
-            statusBanner = "Failed: \(error.localizedDescription)"
+            errorMessage = "Failed to delete category: \(error.localizedDescription)"
         }
     }
 
@@ -557,9 +605,9 @@ struct SettingsSheet: View {
             _ = try await client.addAllowlist(pattern: pattern, kind: kind)
             newAllowlistPattern = ""
             appState.allowlist = try await client.listAllowlist()
-            statusBanner = "Added \(pattern) to allowlist."
+            errorMessage = nil
         } catch {
-            statusBanner = "Failed: \(error.localizedDescription)"
+            errorMessage = "Failed to add allowlist entry: \(error.localizedDescription)"
         }
     }
 
@@ -568,9 +616,9 @@ struct SettingsSheet: View {
         do {
             try await client.deleteAllowlist(id: id)
             appState.allowlist = try await client.listAllowlist()
-            statusBanner = "Removed allowlist entry."
+            errorMessage = nil
         } catch {
-            statusBanner = "Failed: \(error.localizedDescription)"
+            errorMessage = "Failed to remove allowlist entry: \(error.localizedDescription)"
         }
     }
 
@@ -579,9 +627,9 @@ struct SettingsSheet: View {
         do {
             try await client.revokeDevice(id: id)
             appState.devices = try await client.listDevices()
-            statusBanner = "Revoked device."
+            errorMessage = nil
         } catch {
-            statusBanner = "Failed: \(error.localizedDescription)"
+            errorMessage = "Failed to revoke device: \(error.localizedDescription)"
         }
     }
 }
