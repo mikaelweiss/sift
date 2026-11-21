@@ -7,19 +7,17 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0577E31A7AE1AA2EB1472B38 /* HistoricalScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ED3345606F5BA6DBEE9F44B /* HistoricalScanView.swift */; };
 		0FD1DD67A6C94047EF8AC9E9 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E57ED8E085D16BBE663210E6 /* KeychainStore.swift */; };
 		125CDFD925ACFC094EB0E40E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E284EEF59D087515A1AA6A /* MainTabView.swift */; };
 		45DC670C70C7EFF6E972F47B /* SSHDeployer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF5C89AFA30C925A3BC6A67C /* SSHDeployer.swift */; };
 		5E0648A8AADF27A86FE294DB /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A426BF43E2B33A0F68BAD10B /* APIClient.swift */; };
 		7C1F7EA3906A076A958DD48C /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72E75D26BF51BC8762029423 /* AppState.swift */; };
-		8608B811AD55001C0A11FB29 /* HistoricalScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DDC93B07E8187D8540A70BE /* HistoricalScanView.swift */; };
 		8FB1F194EB315175475C98DD /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1537E89CB8F57F1D8D0A454C /* OnboardingView.swift */; };
 		A320B735A494689ED4238AA2 /* AbuseReviewSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 207E9A37F3012AFECA0CD1B5 /* AbuseReviewSheet.swift */; };
-		B79FC84294C650F382EF21EA /* AbuseReportingSetupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47162F391DA13019EFEDB599 /* AbuseReportingSetupView.swift */; };
 		B978AADF29EFE01D58823BA3 /* PairingApprovalSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D524158712381FCDB00275D8 /* PairingApprovalSheet.swift */; };
 		BF27DE0EA725B37375B5EF07 /* SettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9E5DB074BD306CDA144E14C /* SettingsSheet.swift */; };
 		D09383C1039F730E1E853571 /* Binaries in Resources */ = {isa = PBXBuildFile; fileRef = 20BE2CCC7451BC851C8FE933 /* Binaries */; };
-		D243074A3053D674EE384EB0 /* FeaturesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E74E02B8530EA3636EE3090E /* FeaturesView.swift */; };
 		D730A26AB3F81F0B79F8F57E /* ECleanApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7BA88FF1B7EE38E48920B387 /* ECleanApp.swift */; };
 		DCAE8F19E3DDB78F5D9B0B03 /* APIModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91E8E06B2E2A32CE83F15A85 /* APIModels.swift */; };
 		E710C05EF7B56A2A41D3C05F /* SSEClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DC293F4229DF1728A5F3AE7 /* SSEClient.swift */; };
@@ -29,11 +27,10 @@
 
 /* Begin PBXFileReference section */
 		1537E89CB8F57F1D8D0A454C /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
-		1DDC93B07E8187D8540A70BE /* HistoricalScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoricalScanView.swift; sourceTree = "<group>"; };
 		207E9A37F3012AFECA0CD1B5 /* AbuseReviewSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AbuseReviewSheet.swift; sourceTree = "<group>"; };
 		20BE2CCC7451BC851C8FE933 /* Binaries */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Binaries; path = EClean/Resources/Binaries; sourceTree = SOURCE_ROOT; };
 		3DC293F4229DF1728A5F3AE7 /* SSEClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSEClient.swift; sourceTree = "<group>"; };
-		47162F391DA13019EFEDB599 /* AbuseReportingSetupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AbuseReportingSetupView.swift; sourceTree = "<group>"; };
+		5ED3345606F5BA6DBEE9F44B /* HistoricalScanView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoricalScanView.swift; sourceTree = "<group>"; };
 		72E75D26BF51BC8762029423 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
 		7BA88FF1B7EE38E48920B387 /* ECleanApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ECleanApp.swift; sourceTree = "<group>"; };
 		8D7F27C634033AAB6FBBE13B /* HostDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostDiscovery.swift; sourceTree = "<group>"; };
@@ -45,7 +42,6 @@
 		C4E284EEF59D087515A1AA6A /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		D524158712381FCDB00275D8 /* PairingApprovalSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingApprovalSheet.swift; sourceTree = "<group>"; };
 		E57ED8E085D16BBE663210E6 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
-		E74E02B8530EA3636EE3090E /* FeaturesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeaturesView.swift; sourceTree = "<group>"; };
 		F6B6E20CC47BE7F4A7B18F91 /* EClean.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EClean.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -92,7 +88,6 @@
 			children = (
 				C4E284EEF59D087515A1AA6A /* MainTabView.swift */,
 				C9665D53DB3975AFC4094419 /* AbuseReview */,
-				BA226ABF9607609DB4A98EDB /* Features */,
 				F3978321EEDE0C7B0F13C507 /* Home */,
 				FC02DA157A4D9654258A35B4 /* Onboarding */,
 				7541E74BECEE6503EFF99B2F /* Pairing */,
@@ -129,16 +124,6 @@
 			);
 			sourceTree = "<group>";
 		};
-		BA226ABF9607609DB4A98EDB /* Features */ = {
-			isa = PBXGroup;
-			children = (
-				47162F391DA13019EFEDB599 /* AbuseReportingSetupView.swift */,
-				E74E02B8530EA3636EE3090E /* FeaturesView.swift */,
-				1DDC93B07E8187D8540A70BE /* HistoricalScanView.swift */,
-			);
-			path = Features;
-			sourceTree = "<group>";
-		};
 		C9665D53DB3975AFC4094419 /* AbuseReview */ = {
 			isa = PBXGroup;
 			children = (
@@ -150,6 +135,7 @@
 		F3978321EEDE0C7B0F13C507 /* Home */ = {
 			isa = PBXGroup;
 			children = (
+				5ED3345606F5BA6DBEE9F44B /* HistoricalScanView.swift */,
 				A849F4747623F34929CC882C /* HomeView.swift */,
 			);
 			path = Home;
@@ -163,7 +149,7 @@
 			path = Onboarding;
 			sourceTree = "<group>";
 		};
-		"TEMP_19BCBA4A-F159-420C-8391-6F182CD219A1" /* Resources */ = {
+		"TEMP_BB0E1C68-76C8-4C37-B340-FDFD03940CF3" /* Resources */ = {
 			isa = PBXGroup;
 			children = (
 			);
@@ -242,12 +228,10 @@
 			files = (
 				5E0648A8AADF27A86FE294DB /* APIClient.swift in Sources */,
 				DCAE8F19E3DDB78F5D9B0B03 /* APIModels.swift in Sources */,
-				B79FC84294C650F382EF21EA /* AbuseReportingSetupView.swift in Sources */,
 				A320B735A494689ED4238AA2 /* AbuseReviewSheet.swift in Sources */,
 				7C1F7EA3906A076A958DD48C /* AppState.swift in Sources */,
 				D730A26AB3F81F0B79F8F57E /* ECleanApp.swift in Sources */,
-				D243074A3053D674EE384EB0 /* FeaturesView.swift in Sources */,
-				8608B811AD55001C0A11FB29 /* HistoricalScanView.swift in Sources */,
+				0577E31A7AE1AA2EB1472B38 /* HistoricalScanView.swift in Sources */,
 				FB54A306B9A9805060F84601 /* HomeView.swift in Sources */,
 				F35D74FB1CF88F668B0C57B1 /* HostDiscovery.swift in Sources */,
 				0FD1DD67A6C94047EF8AC9E9 /* KeychainStore.swift in Sources */,
@@ -298,7 +282,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -318,7 +302,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.2;
+				MARKETING_VERSION = 0.1.3;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -382,7 +366,7 @@
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 3;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_NS_ASSERTIONS = NO;
@@ -396,7 +380,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
-				MARKETING_VERSION = 0.1.2;
+				MARKETING_VERSION = 0.1.3;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = EClean;

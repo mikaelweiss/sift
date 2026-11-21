@@ -337,6 +337,12 @@ func (s *Store) migrate() error {
 				`ALTER TABLE scan_jobs ADD COLUMN checkpoints_json TEXT NOT NULL DEFAULT '{}'`,
 			},
 		},
+		{
+			version: 4,
+			stmts: []string{
+				`UPDATE categories SET description = 'Bulk promotional blasts, discount offers, retail sales, and mass advertising emails. Excludes onboarding, welcome, and account or subscription setup emails.' WHERE id = 'marketing_promotions'`,
+			},
+		},
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -384,7 +390,7 @@ func (s *Store) seedBuiltinCategories() error {
 		{
 			ID:            "marketing_promotions",
 			Name:          "Marketing & Promotions",
-			Description:   "Commercial promotional blasts, discount offers, product announcements, retail sales, and mass advertising emails.",
+			Description:   "Bulk promotional blasts, discount offers, retail sales, and mass advertising emails. Excludes onboarding, welcome, and account or subscription setup emails.",
 			Enabled:       true,
 			Builtin:       true,
 			AbuseEligible: false,

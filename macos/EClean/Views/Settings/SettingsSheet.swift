@@ -17,6 +17,8 @@ struct SettingsSheet: View {
     @State private var draftSettings = AppSettings()
     @State private var imapPasswordInput = ""
     @State private var aiAPIKeyInput = ""
+    @State private var smtpPasswordInput = ""
+    @State private var testRecipient = ""
     @State private var newCategoryName = ""
     @State private var newCategoryDescription = ""
     @State private var newAllowlistPattern = ""
@@ -25,6 +27,7 @@ struct SettingsSheet: View {
     @State private var isSaving = false
     @State private var isTestingIMAP = false
     @State private var isTestingAI = false
+    @State private var isSendingTest = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -79,15 +82,99 @@ struct SettingsSheet: View {
                 .padding(.vertical, 8)
             }
         }
-        .frame(width: 680, height: 540)
+        .frame(width: 720, height: 600)
         .onAppear {
             draftSettings = appState.settings
+            testRecipient = appState.settings.abuseFromEmail
         }
     }
 
     private var filteringTab: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 18) {
+                GroupBox("Categories") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            Text("Category")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text("Block")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 54, alignment: .center)
+                            Text("Report")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 54, alignment: .center)
+                            Spacer().frame(width: 24)
+                        }
+                        .padding(.bottom, 2)
+
+                        Divider()
+
+                        ForEach(appState.categories) { cat in
+                            HStack(alignment: .center, spacing: 8) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(cat.name).font(.body.weight(.medium))
+                                    Text(cat.description)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Spacer()
+                                Toggle("", isOn: Binding(
+                                    get: { cat.enabled },
+                                    set: { newValue in
+                                        var updated = cat
+                                        updated.enabled = newValue
+                                        Task { await updateCategory(updated) }
+                                    }
+                                ))
+                                .labelsHidden()
+                                .frame(width: 54, alignment: .center)
+
+                                Toggle("", isOn: Binding(
+                                    get: { cat.abuseEligible },
+                                    set: { newValue in
+                                        var updated = cat
+                                        updated.abuseEligible = newValue
+                                        Task { await updateCategory(updated) }
+                                    }
+                                ))
+                                .labelsHidden()
+                                .frame(width: 54, alignment: .center)
+
+                                if !cat.builtin {
+                                    Button(role: .destructive) {
+                                        Task { await deleteCategory(cat.id) }
+                                    } label: {
+                                        Image(systemName: "trash")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .frame(width: 24)
+                                } else {
+                                    Spacer().frame(width: 24)
+                                }
+                            }
+                            .padding(.vertical, 2)
+                            Divider()
+                        }
+
+                        HStack {
+                            TextField("Custom category name", text: $newCategoryName)
+                                .textFieldStyle(.roundedBorder)
+                            TextField("Short description", text: $newCategoryDescription)
+                                .textFieldStyle(.roundedBorder)
+                            Button("Add") {
+                                Task { await addCategory() }
+                            }
+                            .disabled(newCategoryName.trimmingCharacters(in: .whitespaces).isEmpty)
+                        }
+                    }
+                    .padding(8)
+                }
+
                 GroupBox("Spam Action & Thresholds") {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker("When spam is detected", selection: $draftSettings.spamAction) {
@@ -97,71 +184,80 @@ struct SettingsSheet: View {
                         .pickerStyle(.segmented)
 
                         HStack {
-                            Text("Trash confidence threshold: \(Int(draftSettings.trashThreshold * 100))%")
-                                .frame(width: 240, alignment: .leading)
+                            Text("Trash threshold: \(Int(draftSettings.trashThreshold * 100))%")
+                                .frame(width: 210, alignment: .leading)
                             Slider(value: $draftSettings.trashThreshold, in: 0.50...0.99, step: 0.01)
                         }
 
                         HStack {
                             Text("Permanent delete threshold: \(Int(draftSettings.deleteThreshold * 100))%")
-                                .frame(width: 240, alignment: .leading)
+                                .frame(width: 210, alignment: .leading)
                             Slider(value: $draftSettings.deleteThreshold, in: 0.70...0.99, step: 0.01)
-                        }
-
-                        HStack {
-                            Spacer()
-                            Button("Save Action Settings") {
-                                Task { await saveSettings() }
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(isSaving)
                         }
                     }
                     .padding(8)
                 }
 
-                GroupBox("Blocked Categories") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(appState.categories) { cat in
+                GroupBox("Outbound Abuse Reporting Identity") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Categories checked under Report above queue RDAP/WHOIS abuse reports with your address redacted from headers.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                        Toggle("Require manual approval before sending (via top-right alert icon)", isOn: $draftSettings.abuseManualApproval)
+
+                        HStack {
+                            Text("Report confidence floor: \(Int(draftSettings.abuseMinConfidence * 100))%")
+                                .frame(width: 210, alignment: .leading)
+                            Slider(value: $draftSettings.abuseMinConfidence, in: 0.85...0.99, step: 0.01)
+                        }
+
+                        Stepper("Repeat-domain cooldown: \(draftSettings.abuseCooldownDays) days", value: $draftSettings.abuseCooldownDays, in: 1...30)
+
+                        Divider()
+
+                        Picker("SMTP Mode", selection: $draftSettings.abuseSMTPMode) {
+                            Text("iCloud Mail Alias (smtp.mail.me.com)").tag("icloud_alias")
+                            Text("Custom SMTP").tag("custom")
+                        }
+                        .pickerStyle(.segmented)
+
+                        TextField("From Email / Alias", text: $draftSettings.abuseFromEmail, prompt: Text(verbatim: "From Email / Alias (e.g. abuse-alias@icloud.com)"))
+                            .textFieldStyle(.roundedBorder)
+
+                        if draftSettings.abuseSMTPMode == "custom" {
                             HStack {
-                                Toggle(isOn: Binding(
-                                    get: { cat.enabled },
-                                    set: { newValue in
-                                        var updated = cat
-                                        updated.enabled = newValue
-                                        Task { await updateCategory(updated) }
-                                    }
-                                )) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(cat.name).font(.body.weight(.medium))
-                                        Text(cat.description).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                                if !cat.builtin {
-                                    Button(role: .destructive) {
-                                        Task { await deleteCategory(cat.id) }
-                                    } label: {
-                                        Image(systemName: "trash")
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
+                                TextField("SMTP Host", text: $draftSettings.abuseSMTPHost)
+                                    .textFieldStyle(.roundedBorder)
+                                TextField("Port", value: $draftSettings.abuseSMTPPort, format: .number)
+                                    .textFieldStyle(.roundedBorder)
+                                    .frame(width: 90)
                             }
-                            Divider()
+                            TextField("SMTP Username", text: $draftSettings.abuseSMTPUsername)
+                                .textFieldStyle(.roundedBorder)
+                            SecureField(appState.settings.hasAbuseSMTPPassword == true ? "SMTP Password (saved)" : "SMTP Password", text: $smtpPasswordInput)
+                                .textFieldStyle(.roundedBorder)
                         }
 
                         HStack {
-                            TextField("Custom category name", text: $newCategoryName)
+                            TextField("Test recipient email", text: $testRecipient)
                                 .textFieldStyle(.roundedBorder)
-                            TextField("Description", text: $newCategoryDescription)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Add") {
-                                Task { await addCategory() }
+                            Button(isSendingTest ? "Sending..." : "Send Test Email") {
+                                Task { await sendTestEmail() }
                             }
-                            .disabled(newCategoryName.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .disabled(isSendingTest)
                         }
                     }
                     .padding(8)
+                }
+
+                HStack {
+                    Spacer()
+                    Button(isSaving ? "Saving..." : "Save Changes") {
+                        Task { await saveSettings() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSaving)
                 }
             }
             .padding(4)
@@ -350,17 +446,33 @@ struct SettingsSheet: View {
         isSaving = true
         defer { isSaving = false }
         var payload = draftSettings
+        payload.abuseEnabled = true
         if !imapPasswordInput.isEmpty { payload.imapPassword = imapPasswordInput }
         if !aiAPIKeyInput.isEmpty { payload.aiAPIKey = aiAPIKeyInput }
+        if !smtpPasswordInput.isEmpty { payload.abuseSMTPPassword = smtpPasswordInput }
         do {
             let updated = try await client.updateSettings(payload)
             appState.settings = updated
             draftSettings = updated
             imapPasswordInput = ""
             aiAPIKeyInput = ""
+            smtpPasswordInput = ""
             statusBanner = "Settings saved."
         } catch {
             statusBanner = "Save failed: \(error.localizedDescription)"
+        }
+    }
+
+    private func sendTestEmail() async {
+        guard let client = appState.apiClient else { return }
+        isSendingTest = true
+        defer { isSendingTest = false }
+        await saveSettings()
+        do {
+            let res = try await client.testAbuseSMTP(toEmail: testRecipient.trimmingCharacters(in: .whitespaces))
+            statusBanner = res.ok ? "Test email sent successfully." : "SMTP test failed: \(res.error)"
+        } catch {
+            statusBanner = "SMTP test failed: \(error.localizedDescription)"
         }
     }
 
@@ -402,7 +514,7 @@ struct SettingsSheet: View {
         do {
             _ = try await client.updateCategory(cat)
             appState.categories = try await client.listCategories()
-            statusBanner = "Updated category \(cat.name)."
+            statusBanner = "Updated \(cat.name)."
         } catch {
             statusBanner = "Failed: \(error.localizedDescription)"
         }

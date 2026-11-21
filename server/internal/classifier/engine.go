@@ -90,12 +90,12 @@ func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) 
 		questions[c.ID] = jev.NoulQuestion{
 			Type: "noul",
 			Instructions: fmt.Sprintf(
-				"Does this incoming email belong to the blocked category %q (%s)?",
+				"Does this incoming email belong to the blocked spam category %q (%s)?",
 				c.Name, c.Description,
 			),
 			Criteria: &jev.Criteria{
-				True:  fmt.Sprintf("The email clearly matches %s and is unwanted spam or solicitation in this category.", c.Name),
-				False: "The email is legitimate personal, transactional, security, or expected correspondence, or does not match this category.",
+				True:  fmt.Sprintf("The email clearly matches %s and is unwanted spam, bulk promotion, or unsolicited outreach.", c.Name),
+				False: "The email is personal, transactional, security/auth, receipt/billing, or an onboarding, welcome, or account/subscription setup email for a service the recipient signed up for, or does not match this category.",
 			},
 		}
 	}

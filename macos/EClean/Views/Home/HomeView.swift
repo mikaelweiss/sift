@@ -6,17 +6,15 @@ struct HomeView: View {
     @State private var selectedDays = 30
 
     private let dayOptions: [(label: String, days: Int)] = [
-        ("7 Days", 7),
-        ("30 Days", 30),
-        ("90 Days", 90),
-        ("All Time", 0),
+        ("7D", 7),
+        ("30D", 30),
+        ("90D", 90),
+        ("All", 0),
     ]
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                statusHeader
-
                 if appState.serverUpdateAvailable {
                     updateBanner
                 }
@@ -34,62 +32,17 @@ struct HomeView: View {
                         .controlSize(.small)
                     }
                     .padding(12)
-                    .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.red.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
                 }
 
-                summaryCards
-                chartSection
+                chartCard
+                HistoricalScanView()
             }
             .padding(24)
         }
         .onChange(of: selectedDays) { _, newValue in
             Task { await appState.refreshStats(days: newValue) }
         }
-    }
-
-    private var statusHeader: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Spam Protection")
-                    .font(.title2.bold())
-                HStack(spacing: 12) {
-                    statusPill(
-                        label: appState.isConnected ? "Server Online" : "Server Offline",
-                        color: appState.isConnected ? .green : .red
-                    )
-                    if let health = appState.health {
-                        statusPill(
-                            label: health.imapConnected ? "iCloud IMAP IDLE Active" : "IMAP Disconnected",
-                            color: health.imapConnected ? .green : .orange
-                        )
-                        Text("\(appState.connection?.host ?? "") · v\(health.version) (\(health.os)/\(health.arch))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            Spacer()
-            Button {
-                Task { await appState.refreshAll() }
-            } label: {
-                Label("Refresh", systemImage: "arrow.clockwise")
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
-    }
-
-    private func statusPill(label: String, color: Color) -> some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
-            Text(label)
-                .font(.caption.weight(.medium))
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.12), in: Capsule())
     }
 
     private var updateBanner: some View {
@@ -100,7 +53,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Server Update Available (v\(appState.bundledServerVersion))")
                     .font(.headline)
-                Text(appState.isUpdatingServer ? appState.updateProgressMessage : "Your app includes a newer eclean server binary. Updating preserves all SQLite data.")
+                Text(appState.isUpdatingServer ? appState.updateProgressMessage : "Update the eclean binary on your server while keeping all SQLite data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -118,94 +71,65 @@ struct HomeView: View {
         .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
     }
 
-    private var summaryCards: some View {
-        HStack(spacing: 16) {
-            metricCard(
-                title: "Blocked Emails",
-                value: "\(appState.totalBlocked)",
-                subtitle: selectedDays == 0 ? "All recorded history" : "Last \(selectedDays) days",
-                icon: "shield.checkmark.fill",
-                color: .blue
-            )
-            metricCard(
-                title: "Active Categories",
-                value: "\(appState.categories.filter(\.enabled).count)",
-                subtitle: appState.settings.spamAction == "delete" ? "Mode: Delete Permanently" : "Mode: Move to Trash",
-                icon: "tag.fill",
-                color: .purple
-            )
-            metricCard(
-                title: "Pending Abuse Reports",
-                value: "\(appState.abuseQueue.count)",
-                subtitle: appState.settings.abuseEnabled ? "Click yellow icon to review" : "Disabled in Features",
-                icon: "exclamationmark.triangle.fill",
-                color: .yellow
-            )
-        }
-    }
-
-    private func metricCard(title: String, value: String, subtitle: String, icon: String, color: Color) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: icon)
-                    .foregroundStyle(color)
-                Text(title)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            Text(value)
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-            Text(subtitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-    }
-
-    private var chartSection: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Text("Blocked Spam by Category Over Time")
-                        .font(.headline)
-                    Spacer()
-                    Picker("Range", selection: $selectedDays) {
-                        ForEach(dayOptions, id: \.days) { opt in
-                            Text(opt.label).tag(opt.days)
-                        }
+    private var chartCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(appState.totalBlocked)")
+                            .font(.system(size: 32, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                        Text(appState.totalBlocked == 1 ? "spam email blocked" : "spam emails blocked")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 300)
+                    Text(timeframeSubtitle)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
 
-                if appState.stats.isEmpty {
-                    VStack(spacing: 8) {
-                        Image(systemName: "chart.bar.xaxis")
-                            .font(.largeTitle)
-                            .foregroundStyle(.secondary)
-                        Text("No blocked spam recorded in this timeframe yet.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                        Text("Run a Historical Inbox Scan in Features to backfill past trends.")
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+                Spacer()
+
+                Picker("Range", selection: $selectedDays) {
+                    ForEach(dayOptions, id: \.days) { opt in
+                        Text(opt.label).tag(opt.days)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 240)
-                } else {
-                    Chart(appState.stats) { item in
-                        BarMark(
-                            x: .value("Day", item.parsedDate, unit: .day),
-                            y: .value("Blocked", item.count)
-                        )
-                        .foregroundStyle(by: .value("Category", item.categoryName))
-                    }
-                    .chartLegend(position: .bottom)
-                    .frame(height: 260)
                 }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 210)
             }
-            .padding(8)
+
+            if appState.stats.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "chart.bar.xaxis")
+                        .font(.title)
+                        .foregroundStyle(.tertiary)
+                    Text("No blocked spam in this timeframe yet")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 220)
+            } else {
+                Chart(appState.stats) { item in
+                    BarMark(
+                        x: .value("Day", item.parsedDate, unit: .day),
+                        y: .value("Blocked", item.count)
+                    )
+                    .foregroundStyle(by: .value("Category", item.categoryName))
+                }
+                .chartLegend(position: .bottom)
+                .frame(height: 240)
+            }
         }
+        .padding(20)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var timeframeSubtitle: String {
+        let mode = appState.settings.spamAction == "delete" ? "Permanent delete" : "Move to Trash"
+        let activeCount = appState.categories.filter(\.enabled).count
+        let range = selectedDays == 0 ? "All time" : "Last \(selectedDays) days"
+        return "\(range) · \(activeCount) active categories · \(mode)"
     }
 }

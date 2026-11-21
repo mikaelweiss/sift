@@ -8,78 +8,77 @@ struct HistoricalScanView: View {
     @State private var errorMessage: String?
 
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.title3)
-                        .foregroundStyle(.blue)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Historical Mail Scan")
-                            .font(.headline)
-                        Text("Scan INBOX, Junk, Archive, and all custom iCloud folders to clean old spam and backfill your Home stats chart.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Historical Mail Scan")
+                        .font(.headline)
+                    Text("Scans INBOX, Junk, Archive, and custom iCloud folders.")
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.secondary)
                 }
 
-                HStack(spacing: 16) {
-                    Picker("Date range", selection: $dateRange) {
-                        Text("Last 30 Days").tag("30d")
-                        Text("Last Year").tag("1y")
-                        Text("All Mail").tag("all")
-                    }
-                    .frame(width: 240)
+                Spacer()
 
-                    Toggle("Dry Run (preview only, do not move/delete)", isOn: $dryRun)
+                Picker("Range", selection: $dateRange) {
+                    Text("Last 30 Days").tag("30d")
+                    Text("Last Year").tag("1y")
+                    Text("All Mail").tag("all")
                 }
+                .labelsHidden()
+                .frame(width: 130)
 
-                if let job = appState.latestScan {
-                    Divider()
-                    scanStatusView(job)
-                }
+                Toggle("Dry Run", isOn: $dryRun)
+                    .help("Preview matches without moving or deleting mail")
 
-                HStack {
-                    Spacer()
-                    if let job = appState.latestScan, job.status == "running" {
-                        Button("Pause") {
-                            Task { await pause(job.id) }
-                        }
-                        Button("Cancel", role: .destructive) {
-                            Task { await cancel(job.id) }
-                        }
-                    } else if let job = appState.latestScan, job.status == "paused" {
-                        Button("Resume") {
-                            Task { await resume(job.id) }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Button("Cancel", role: .destructive) {
-                            Task { await cancel(job.id) }
-                        }
-                    } else {
-                        Button(dryRun ? "Start Dry Run Scan" : "Start Live Inbox Scan") {
-                            Task { await startScan() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(isSubmitting)
-                    }
-                }
+                actionButtons
             }
-            .padding(8)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            if let job = appState.latestScan {
+                Divider()
+                scanStatusView(job)
+            }
         }
+        .padding(18)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
         .task(id: appState.latestScan?.status) {
             while appState.latestScan?.status == "running" {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 if Task.isCancelled { break }
                 await appState.refreshLatestScan()
             }
+        }
+    }
+
+    @ViewBuilder
+    private var actionButtons: some View {
+        if let job = appState.latestScan, job.status == "running" {
+            Button("Pause") {
+                Task { await pause(job.id) }
+            }
+            Button("Cancel", role: .destructive) {
+                Task { await cancel(job.id) }
+            }
+        } else if let job = appState.latestScan, job.status == "paused" {
+            Button("Resume") {
+                Task { await resume(job.id) }
+            }
+            .buttonStyle(.borderedProminent)
+            Button("Cancel", role: .destructive) {
+                Task { await cancel(job.id) }
+            }
+        } else {
+            Button(dryRun ? "Dry Run" : "Scan Mail") {
+                Task { await startScan() }
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isSubmitting)
         }
     }
 
@@ -95,10 +94,10 @@ struct HistoricalScanView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                 }
-                Text("Job Status: \(job.status.capitalized) (\(job.dryRun ? "Dry Run" : "Live"), \(job.dateRange))\(job.status == "running" && !(job.currentMailbox ?? "").isEmpty ? " · \(job.currentMailbox!)" : "")")
+                Text(statusHeadline(job))
                     .font(.subheadline.weight(.medium))
                 Spacer()
-                Text("\(job.scannedMessages) / \(job.totalMessages) scanned · \(job.spamFound) spam")
+                Text("\(job.scannedMessages) / \(job.totalMessages) · \(job.spamFound) spam")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
@@ -111,7 +110,7 @@ struct HistoricalScanView: View {
             }
 
             if job.status == "completed" && job.spamFound == 0 {
-                Text("Checked \(job.scannedMessages) \(job.scannedMessages == 1 ? "email" : "emails") and found no spam matching your enabled categories.")
+                Text("Checked \(job.scannedMessages) \(job.scannedMessages == 1 ? "email" : "emails") across your folders and found no spam.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -123,9 +122,9 @@ struct HistoricalScanView: View {
             }
 
             if !job.samples.isEmpty {
-                DisclosureGroup("Matched Sample Emails (\(job.samples.count))") {
+                DisclosureGroup("Matched Emails (\(job.samples.count))") {
                     VStack(alignment: .leading, spacing: 6) {
-                        ForEach(job.samples.prefix(15)) { sample in
+                        ForEach(job.samples.prefix(20)) { sample in
                             HStack {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(sample.subject.isEmpty ? "(No subject)" : sample.subject)
@@ -149,6 +148,14 @@ struct HistoricalScanView: View {
                 .font(.caption)
             }
         }
+    }
+
+    private func statusHeadline(_ job: ScanJob) -> String {
+        let mode = job.dryRun ? "Dry Run" : "Live"
+        if job.status == "running", let folder = job.currentMailbox, !folder.isEmpty {
+            return "Scanning \(folder) (\(mode), \(job.dateRange))"
+        }
+        return "\(job.status.capitalized) (\(mode), \(job.dateRange))"
     }
 
     private func startScan() async {
