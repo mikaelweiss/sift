@@ -311,11 +311,16 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 18) {
             GroupBox("iCloud Mail (IMAP)") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Generate an app-specific password at account.apple.com under Sign-In and Security -> App-Specific Passwords.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Link("Open account.apple.com", destination: URL(string: "https://account.apple.com")!)
-                        .font(.caption)
+                    HStack(alignment: .center) {
+                        Text("Create an app-specific password under Sign-In and Security -> App-Specific Passwords.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Link(destination: URL(string: "https://account.apple.com/account/manage/section/security")!) {
+                            Label("Create App-Specific Password", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.bordered)
+                    }
                     TextField("iCloud Email", text: $icloudEmail, prompt: Text(verbatim: "iCloud Email (e.g. you@icloud.com)"))
                         .textFieldStyle(.roundedBorder)
                     SecureField("App-Specific Password (xxxx-xxxx-xxxx-xxxx)", text: $icloudAppPassword)
@@ -333,6 +338,17 @@ struct OnboardingView: View {
                     .pickerStyle(.segmented)
                     .onChange(of: aiProvider) { _, newValue in
                         aiModel = newValue == "openrouter" ? "typesafe/jev-latest" : "jev-latest"
+                    }
+
+                    HStack(alignment: .center) {
+                        Text(aiProvider == "openrouter" ? "Create an API key in your OpenRouter settings." : "Create an API key in the TypeSafe console.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Link(destination: URL(string: aiProvider == "openrouter" ? "https://openrouter.ai/settings/keys" : "https://console.typesafe.ai/keys")!) {
+                            Label(aiProvider == "openrouter" ? "Get OpenRouter API Key" : "Get TypeSafe API Key", systemImage: "arrow.up.right.square")
+                        }
+                        .buttonStyle(.bordered)
                     }
 
                     SecureField("API Key", text: $aiAPIKey)

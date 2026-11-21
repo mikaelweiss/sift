@@ -197,6 +197,10 @@ struct SettingsSheet: View {
                                 Task { await testIMAP() }
                             }
                             .disabled(isTestingIMAP)
+                            Link(destination: URL(string: "https://account.apple.com/account/manage/section/security")!) {
+                                Label("Create App-Specific Password", systemImage: "arrow.up.right.square")
+                            }
+                            .buttonStyle(.bordered)
                             Spacer()
                             Button("Save Credentials") {
                                 Task { await saveSettings() }
@@ -224,6 +228,10 @@ struct SettingsSheet: View {
                                 Task { await testAI() }
                             }
                             .disabled(isTestingAI)
+                            Link(destination: URL(string: draftSettings.aiProvider == "openrouter" ? "https://openrouter.ai/settings/keys" : "https://console.typesafe.ai/keys")!) {
+                                Label(draftSettings.aiProvider == "openrouter" ? "Get OpenRouter API Key" : "Get TypeSafe API Key", systemImage: "arrow.up.right.square")
+                            }
+                            .buttonStyle(.bordered)
                             Spacer()
                             Button("Save Credentials") {
                                 Task { await saveSettings() }
