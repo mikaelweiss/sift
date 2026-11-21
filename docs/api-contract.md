@@ -90,6 +90,7 @@ All `/api/*` endpoints require `Authorization: Bearer <device_token>` except:
 - `POST /api/scans/{id}/pause` -> `{"job": ScanJob}`
 - `POST /api/scans/{id}/resume` -> `{"job": ScanJob}`
 - `POST /api/scans/{id}/cancel` -> `{"job": ScanJob}`
+- `POST /api/scans/{id}/apply` -> `{"job": ScanJob}` (applies a completed Dry Run without re-running Jev)
 
 ### Abuse Reporting
 - `GET /api/abuse/queue` -> `{"items": [AbuseQueueItem]}`

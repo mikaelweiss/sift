@@ -114,6 +114,24 @@ type ScanSample struct {
 	Action     string  `json:"action"`
 }
 
+type ScanResult struct {
+	ID           int64
+	JobID        string
+	Mailbox      string
+	UIDValidity  uint32
+	UID          uint32
+	MessageID    string
+	Sender       string
+	SenderDomain string
+	Subject      string
+	EmailDate    string
+	CategoryID   string
+	Confidence   float64
+	Action       string
+	RawHeaders   string
+	Applied      bool
+}
+
 type AbuseQueueItem struct {
 	ID                 int64    `json:"id"`
 	RootDomain         string   `json:"root_domain"`
@@ -341,6 +359,30 @@ func (s *Store) migrate() error {
 			version: 4,
 			stmts: []string{
 				`UPDATE categories SET description = 'Bulk promotional blasts, discount offers, retail sales, and mass advertising emails. Excludes onboarding, welcome, and account or subscription setup emails.' WHERE id = 'marketing_promotions'`,
+			},
+		},
+		{
+			version: 5,
+			stmts: []string{
+				`CREATE TABLE IF NOT EXISTS scan_results (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					job_id TEXT NOT NULL,
+					mailbox TEXT NOT NULL,
+					uid_validity INTEGER NOT NULL,
+					uid INTEGER NOT NULL,
+					message_id TEXT NOT NULL DEFAULT '',
+					sender TEXT NOT NULL,
+					sender_domain TEXT NOT NULL,
+					subject TEXT NOT NULL,
+					email_date TEXT NOT NULL,
+					category_id TEXT NOT NULL DEFAULT '',
+					confidence REAL NOT NULL DEFAULT 0,
+					action TEXT NOT NULL,
+					raw_headers TEXT NOT NULL DEFAULT '',
+					applied INTEGER NOT NULL DEFAULT 0,
+					UNIQUE(job_id, mailbox, uid_validity, uid)
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_scan_results_job ON scan_results(job_id, applied, action)`,
 			},
 		},
 	}
@@ -901,6 +943,71 @@ func (s *Store) GetLatestScanJob() (*ScanJob, error) {
 func (s *Store) GetScanJob(id string) (*ScanJob, error) {
 	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs WHERE id = ?`, id)
 	return scanJobFromRow(row)
+}
+
+func (s *Store) RecordScanResults(results []ScanResult) error {
+	if len(results) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scan_results(job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_headers, applied) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, r := range results {
+		if _, err := stmt.Exec(r.JobID, r.Mailbox, r.UIDValidity, r.UID, r.MessageID, r.Sender, r.SenderDomain, r.Subject, r.EmailDate, r.CategoryID, r.Confidence, r.Action, r.RawHeaders); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ListPendingScanResults(jobID string) ([]ScanResult, error) {
+	rows, err := s.db.Query(`SELECT id, job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_headers, applied FROM scan_results WHERE job_id = ? AND applied = 0 ORDER BY mailbox ASC, uid ASC`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ScanResult
+	for rows.Next() {
+		var r ScanResult
+		var applied int
+		if err := rows.Scan(&r.ID, &r.JobID, &r.Mailbox, &r.UIDValidity, &r.UID, &r.MessageID, &r.Sender, &r.SenderDomain, &r.Subject, &r.EmailDate, &r.CategoryID, &r.Confidence, &r.Action, &r.RawHeaders, &applied); err != nil {
+			return nil, err
+		}
+		r.Applied = applied == 1
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MarkScanResultsApplied(ids []int64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`UPDATE scan_results SET applied = 1 WHERE id = ?`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range ids {
+		if _, err := stmt.Exec(id); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func scanJobFromRow(row *sql.Row) (*ScanJob, error) {

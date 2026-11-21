@@ -157,6 +157,42 @@ func (s *Scanner) Cancel(id string) (db.ScanJob, error) {
 	return *job, nil
 }
 
+func (s *Scanner) Apply(id string) (db.ScanJob, error) {
+	s.mu.Lock()
+	if s.activeJobID != "" {
+		s.mu.Unlock()
+		return db.ScanJob{}, errors.New("a scan job is already active")
+	}
+	job, err := s.store.GetScanJob(id)
+	if err != nil || job == nil {
+		s.mu.Unlock()
+		return db.ScanJob{}, errors.New("scan job not found")
+	}
+	if !job.DryRun {
+		s.mu.Unlock()
+		return db.ScanJob{}, errors.New("only dry run jobs can be applied")
+	}
+	if job.Status != "completed" && job.Status != "failed" {
+		s.mu.Unlock()
+		return db.ScanJob{}, fmt.Errorf("cannot apply scan in status %q", job.Status)
+	}
+	job.Status = "applying"
+	job.ErrorMsg = ""
+	if err := s.store.SaveScanJob(*job); err != nil {
+		s.mu.Unlock()
+		return db.ScanJob{}, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.activeJobID = job.ID
+	s.cancelActive = cancel
+	s.paused = false
+	s.mu.Unlock()
+
+	s.emit(*job)
+	go s.runApply(ctx, *job)
+	return *job, nil
+}
+
 func (s *Scanner) isPaused() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -401,7 +437,35 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 				return
 			}
 
-			if !job.DryRun {
+			if job.DryRun {
+				var dryRows []db.ScanResult
+				for _, r := range results {
+					if r.err != nil {
+						log.Printf("scan %s UID %d classify failed: %v", plan.mailbox, r.uid, r.err)
+						continue
+					}
+					rawHdr := ""
+					if (r.decision.Action == "trash" || r.decision.Action == "delete") && wAgeWithin7Days(r.input.EmailDate) {
+						rawHdr = r.input.RawHeaders
+					}
+					dryRows = append(dryRows, db.ScanResult{
+						JobID:        job.ID,
+						Mailbox:      plan.mailbox,
+						UIDValidity:  mbox.UIDValidity,
+						UID:          uint32(r.uid),
+						MessageID:    r.input.MessageID,
+						Sender:       r.input.SenderEmail,
+						SenderDomain: r.input.SenderDomain,
+						Subject:      r.input.Subject,
+						EmailDate:    r.input.EmailDate.UTC().Format(time.RFC3339),
+						CategoryID:   r.decision.CategoryID,
+						Confidence:   r.decision.Confidence,
+						Action:       r.decision.Action,
+						RawHeaders:   rawHdr,
+					})
+				}
+				_ = s.store.RecordScanResults(dryRows)
+			} else {
 				var trashUIDs []goimap.UID
 				var deleteUIDs []goimap.UID
 				for _, r := range results {
@@ -480,6 +544,161 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 
 	job.CurrentMailbox = ""
 	job.Status = "completed"
+	_ = s.store.SaveScanJob(job)
+	s.emit(job)
+	_ = c.Logout().Wait()
+}
+
+func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
+	defer s.clearActive(job.ID)
+
+	pending, err := s.store.ListPendingScanResults(job.ID)
+	if err != nil {
+		s.failJob(&job, err)
+		return
+	}
+	if len(pending) == 0 {
+		job.CurrentMailbox = ""
+		job.Status = "applied"
+		_ = s.store.SaveScanJob(job)
+		s.emit(job)
+		return
+	}
+
+	cfg, err := s.store.GetSettings()
+	if err != nil {
+		s.failJob(&job, err)
+		return
+	}
+	c, err := dialAndLogin(cfg.IMAPHost, cfg.IMAPPort, cfg.IMAPUsername, cfg.IMAPPassword, nil)
+	if err != nil {
+		s.failJob(&job, err)
+		return
+	}
+	defer c.Close()
+
+	trashMailbox := discoverTrashMailbox(c)
+
+	// Group pending results by mailbox while preserving order.
+	var mailboxOrder []string
+	byMailbox := make(map[string][]db.ScanResult)
+	for _, r := range pending {
+		if _, exists := byMailbox[r.Mailbox]; !exists {
+			mailboxOrder = append(mailboxOrder, r.Mailbox)
+		}
+		byMailbox[r.Mailbox] = append(byMailbox[r.Mailbox], r)
+	}
+
+	const applyChunkSize = 100
+	for _, mailbox := range mailboxOrder {
+		if ctx.Err() != nil {
+			job.Status = "cancelled"
+			_ = s.store.SaveScanJob(job)
+			s.emit(job)
+			return
+		}
+
+		job.CurrentMailbox = mailbox
+		_ = s.store.SaveScanJob(job)
+		s.emit(job)
+
+		mbox, selErr := c.Select(mailbox, &goimap.SelectOptions{ReadOnly: false}).Wait()
+		if selErr != nil {
+			log.Printf("apply skip folder %q: %v", mailbox, selErr)
+			continue
+		}
+
+		items := byMailbox[mailbox]
+		for start := 0; start < len(items); start += applyChunkSize {
+			if ctx.Err() != nil {
+				job.Status = "cancelled"
+				_ = s.store.SaveScanJob(job)
+				s.emit(job)
+				return
+			}
+			end := start + applyChunkSize
+			if end > len(items) {
+				end = len(items)
+			}
+			chunk := items[start:end]
+
+			var trashUIDs []goimap.UID
+			var deleteUIDs []goimap.UID
+			for _, r := range chunk {
+				if r.UIDValidity != mbox.UIDValidity {
+					continue
+				}
+				if r.Action == "trash" && mailbox != trashMailbox {
+					trashUIDs = append(trashUIDs, goimap.UID(r.UID))
+				} else if r.Action == "delete" {
+					deleteUIDs = append(deleteUIDs, goimap.UID(r.UID))
+				}
+			}
+
+			trashFailed := false
+			if len(trashUIDs) > 0 {
+				if actErr := applySpamActionBatch(c, trashUIDs, "trash", trashMailbox); actErr != nil {
+					log.Printf("apply batch trash in %s failed: %v", mailbox, actErr)
+					trashFailed = true
+				}
+			}
+			deleteFailed := false
+			if len(deleteUIDs) > 0 {
+				if actErr := applySpamActionBatch(c, deleteUIDs, "delete", trashMailbox); actErr != nil {
+					log.Printf("apply batch delete in %s failed: %v", mailbox, actErr)
+					deleteFailed = true
+				}
+			}
+
+			var appliedIDs []int64
+			for _, r := range chunk {
+				actionTaken := r.Action
+				if r.UIDValidity != mbox.UIDValidity {
+					appliedIDs = append(appliedIDs, r.ID)
+					continue
+				}
+				if actionTaken == "trash" && trashFailed && mailbox != trashMailbox {
+					actionTaken = "error"
+				} else if actionTaken == "delete" && deleteFailed {
+					actionTaken = "error"
+				}
+
+				_ = s.store.RecordEmailEvent(db.EmailEvent{
+					Mailbox:      mailbox,
+					UIDValidity:  r.UIDValidity,
+					UID:          r.UID,
+					MessageID:    r.MessageID,
+					Sender:       r.Sender,
+					SenderDomain: r.SenderDomain,
+					Subject:      r.Subject,
+					EmailDate:    r.EmailDate,
+					CategoryID:   r.CategoryID,
+					Confidence:   r.Confidence,
+					Action:       actionTaken,
+					Source:       "backfill",
+				})
+
+				if (actionTaken == "trash" || actionTaken == "delete") && r.RawHeaders != "" && s.abuseSvc != nil {
+					if parsedDate, dErr := time.Parse(time.RFC3339, r.EmailDate); dErr == nil && wAgeWithin7Days(parsedDate) {
+						_ = s.abuseSvc.Consider(ctx, abuse.Candidate{
+							SenderEmail:  r.Sender,
+							SenderDomain: r.SenderDomain,
+							Subject:      r.Subject,
+							RawHeaders:   r.RawHeaders,
+							CategoryID:   r.CategoryID,
+							Confidence:   r.Confidence,
+							EmailDate:    parsedDate,
+						})
+					}
+				}
+				appliedIDs = append(appliedIDs, r.ID)
+			}
+			_ = s.store.MarkScanResultsApplied(appliedIDs)
+		}
+	}
+
+	job.CurrentMailbox = ""
+	job.Status = "applied"
 	_ = s.store.SaveScanJob(job)
 	s.emit(job)
 	_ = c.Logout().Wait()

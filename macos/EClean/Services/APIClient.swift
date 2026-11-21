@@ -281,6 +281,12 @@ final class APIClient {
         return job
     }
 
+    func applyScan(id: String) async throws -> ScanJob {
+        let resp: ScanJobEnvelope = try await send("POST", path: "/api/scans/\(id)/apply")
+        guard let job = resp.job else { throw APIClientError.invalidResponse }
+        return job
+    }
+
     func listAbuseQueue() async throws -> [AbuseQueueItem] {
         let resp: AbuseQueueResponse = try await send("GET", path: "/api/abuse/queue")
         return resp.items

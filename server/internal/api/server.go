@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/scans/{id}/pause", s.requireAuth(http.HandlerFunc(s.handlePauseScan)))
 	mux.Handle("POST /api/scans/{id}/resume", s.requireAuth(http.HandlerFunc(s.handleResumeScan)))
 	mux.Handle("POST /api/scans/{id}/cancel", s.requireAuth(http.HandlerFunc(s.handleCancelScan)))
+	mux.Handle("POST /api/scans/{id}/apply", s.requireAuth(http.HandlerFunc(s.handleApplyScan)))
 
 	mux.Handle("GET /api/abuse/queue", s.requireAuth(http.HandlerFunc(s.handleListAbuseQueue)))
 	mux.Handle("POST /api/abuse/{id}/approve", s.requireAuth(http.HandlerFunc(s.handleApproveAbuse)))
@@ -658,6 +659,19 @@ func (s *Server) handleCancelScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	job, err := s.scanner.Cancel(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": job})
+}
+
+func (s *Server) handleApplyScan(w http.ResponseWriter, r *http.Request) {
+	if s.scanner == nil {
+		writeError(w, http.StatusServiceUnavailable, "scanner unavailable")
+		return
+	}
+	job, err := s.scanner.Apply(r.PathValue("id"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

@@ -121,4 +121,33 @@ func TestStoreLifecycle(t *testing.T) {
 	if err != nil || consumedAgain {
 		t.Fatalf("pairing code must not be reusable")
 	}
+
+	if err := store.RecordScanResults([]ScanResult{
+		{
+			JobID:        "job-1",
+			Mailbox:      "Archive",
+			UIDValidity:  9,
+			UID:          101,
+			Sender:       "spam@bad.test",
+			SenderDomain: "bad.test",
+			Subject:      "Deal",
+			EmailDate:    today,
+			CategoryID:   "marketing_promotions",
+			Confidence:   0.92,
+			Action:       "trash",
+		},
+	}); err != nil {
+		t.Fatalf("RecordScanResults: %v", err)
+	}
+	pending, err := store.ListPendingScanResults("job-1")
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("expected 1 pending scan result, got %d err=%v", len(pending), err)
+	}
+	if err := store.MarkScanResultsApplied([]int64{pending[0].ID}); err != nil {
+		t.Fatalf("MarkScanResultsApplied: %v", err)
+	}
+	pendingAfter, err := store.ListPendingScanResults("job-1")
+	if err != nil || len(pendingAfter) != 0 {
+		t.Fatalf("expected 0 pending scan results after mark applied, got %d", len(pendingAfter))
+	}
 }

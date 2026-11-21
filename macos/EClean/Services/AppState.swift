@@ -130,8 +130,9 @@ final class AppState {
                         self.incomingPairRequest = req
                     case .scanProgress(let job):
                         self.latestScan = job
-                        if job.status == "completed" {
+                        if job.status == "completed" || job.status == "applied" {
                             await self.refreshStats(days: self.selectedStatsDays)
+                            await self.refreshAbuseQueue()
                         }
                     case .abuseQueue:
                         await self.refreshAbuseQueue()
