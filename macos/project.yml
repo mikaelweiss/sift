@@ -37,5 +37,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: org.weisssolutions.sift
         INFOPLIST_FILE: Sift/Info.plist
         CODE_SIGN_ENTITLEMENTS: Sift/Sift.entitlements
-        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         GENERATE_INFOPLIST_FILE: NO
