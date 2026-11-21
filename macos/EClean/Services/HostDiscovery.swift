@@ -124,6 +124,7 @@ final class HostDiscovery {
                 let OS: String?
                 let TailscaleIPs: [String]?
                 let Online: Bool?
+                let Tags: [String]?
             }
             let Peer: [String: Peer]?
         }
@@ -135,6 +136,13 @@ final class HostDiscovery {
         for peer in peers.values {
             guard peer.Online == true else { continue }
             let dns = (peer.DNSName ?? "").trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            let lowerDNS = dns.lowercased()
+            let tags = peer.Tags ?? []
+            if lowerDNS.hasSuffix(".mullvad.ts.net") || tags.contains(where: { $0.lowercased().contains("mullvad") }) {
+                continue
+            }
+            let osLower = (peer.OS ?? "").lowercased()
+            guard osLower == "linux" || osLower == "macos" else { continue }
             let address = !dns.isEmpty ? dns : (peer.TailscaleIPs?.first ?? "")
             guard !address.isEmpty else { continue }
             let displayName = peer.HostName?.isEmpty == false ? peer.HostName! : address
