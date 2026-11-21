@@ -112,7 +112,15 @@ func startIMAPServer(t *testing.T, inbox int) string {
 	return ln.Addr().String()
 }
 
-func runScan(t *testing.T, messages int, dryRun bool) (db.ScanJob, *slowEvaluator, string, time.Duration) {
+type scanRun struct {
+	job     db.ScanJob
+	eval    *slowEvaluator
+	addr    string
+	store   *db.Store
+	elapsed time.Duration
+}
+
+func runScan(t *testing.T, messages int, dryRun bool) scanRun {
 	t.Helper()
 	addr := startIMAPServer(t, messages)
 	dialScanClient = func(host string, port int, username, password string, _ *imapclient.Options) (*imapclient.Client, error) {
@@ -133,7 +141,6 @@ func runScan(t *testing.T, messages int, dryRun bool) (db.ScanJob, *slowEvaluato
 		t.Fatal(err)
 	}
 	cfg.IMAPUsername, cfg.IMAPPassword = "user", "pass"
-	cfg.SpamAction = "trash"
 	if err := store.SaveSettings(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +160,7 @@ func runScan(t *testing.T, messages int, dryRun bool) (db.ScanJob, *slowEvaluato
 		if got.Status != "running" {
 			elapsed := time.Since(started)
 			t.Logf("%d messages in %v, peak Jev concurrency %d", messages, elapsed.Round(time.Millisecond), eval.peak.Load())
-			return *got, eval, addr, elapsed
+			return scanRun{job: *got, eval: eval, addr: addr, store: store, elapsed: elapsed}
 		}
 		if time.Since(started) > time.Minute {
 			t.Fatal("scan did not finish")
@@ -181,7 +188,8 @@ func mailboxCount(t *testing.T, addr, mailbox string) uint32 {
 
 func TestScanDryRunClassifiesEveryMessageConcurrently(t *testing.T) {
 	const messages = 1000
-	job, eval, addr, elapsed := runScan(t, messages, true)
+	run := runScan(t, messages, true)
+	job, eval, addr, elapsed := run.job, run.eval, run.addr, run.elapsed
 	if job.Status != "completed" {
 		t.Fatalf("status %q: %s", job.Status, job.ErrorMsg)
 	}
@@ -202,11 +210,15 @@ func TestScanDryRunClassifiesEveryMessageConcurrently(t *testing.T) {
 	if elapsed > 3*serial {
 		t.Fatalf("scan took %v, want near %v", elapsed, serial)
 	}
+	if matches, err := run.store.ListScanMatches(job.ID); err != nil || len(matches) != messages/4 {
+		t.Fatalf("listed %d matches (err %v), want all %d", len(matches), err, messages/4)
+	}
 }
 
 func TestScanLiveMovesSpamToTrash(t *testing.T) {
 	const messages = 400
-	job, _, addr, _ := runScan(t, messages, false)
+	run := runScan(t, messages, false)
+	job, addr := run.job, run.addr
 	if job.Status != "completed" {
 		t.Fatalf("status %q: %s", job.Status, job.ErrorMsg)
 	}
@@ -215,5 +227,62 @@ func TestScanLiveMovesSpamToTrash(t *testing.T) {
 	}
 	if got := mailboxCount(t, addr, "INBOX") + mailboxCount(t, addr, "Archive"); got != messages-messages/4 {
 		t.Fatalf("INBOX and Archive hold %d messages, want %d", got, messages-messages/4)
+	}
+	if matches, err := run.store.ListScanMatches(job.ID); err != nil || len(matches) != messages/4 {
+		t.Fatalf("listed %d matches (err %v), want all %d", len(matches), err, messages/4)
+	}
+}
+
+func TestTrashListsAndDeletesOnlyEcleanMail(t *testing.T) {
+	const messages = 400
+	run := runScan(t, messages, false)
+	spam := messages / 4
+
+	c, err := imapclient.DialInsecure(run.addr, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.Login("user", "pass").Wait(); err != nil {
+		t.Fatal(err)
+	}
+	own := "From: Friend <friend@example.com>\r\nSubject: Trashed by hand\r\nMessage-ID: <own@example.com>\r\n\r\nHi\r\n"
+	appendCmd := c.Append("Trash", int64(len(own)), nil)
+	_, _ = appendCmd.Write([]byte(own))
+	_ = appendCmd.Close()
+	appended, err := appendCmd.Wait()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	listing, err := ListTrash(run.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listing.Items) != spam {
+		t.Fatalf("listed %d trash items, want the %d EClean trashed", len(listing.Items), spam)
+	}
+
+	var uids []uint32
+	for _, item := range listing.Items[:40] {
+		uids = append(uids, item.UID)
+	}
+	uids = append(uids, uint32(appended.UID))
+	deleted, err := DeleteFromTrash(run.store, listing.UIDValidity, uids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 40 {
+		t.Fatalf("deleted %d, want 40", deleted)
+	}
+	if got := mailboxCount(t, run.addr, "Trash"); got != uint32(spam-40+1) {
+		t.Fatalf("Trash holds %d, want %d with the hand-trashed message kept", got, spam-40+1)
+	}
+	if listing, err = ListTrash(run.store); err != nil || len(listing.Items) != spam-40 {
+		t.Fatalf("relisted %d items (err %v), want %d", len(listing.Items), err, spam-40)
+	}
+
+	if _, err := DeleteFromTrash(run.store, listing.UIDValidity+1, uids); err == nil {
+		t.Fatal("delete with a stale UIDVALIDITY succeeded")
 	}
 }

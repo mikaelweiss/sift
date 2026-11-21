@@ -45,7 +45,7 @@ type AppSettings struct {
 	AIProvider          string  `json:"ai_provider"`
 	AIAPIKey            string  `json:"ai_api_key,omitempty"`
 	AIModel             string  `json:"ai_model"`
-	SpamAction          string  `json:"spam_action"`
+	DeleteEnabled       bool    `json:"delete_enabled"`
 	TrashThreshold      float64 `json:"trash_threshold"`
 	DeleteThreshold     float64 `json:"delete_threshold"`
 	AbuseEnabled        bool    `json:"abuse_enabled"`
@@ -97,13 +97,12 @@ type ScanJob struct {
 	LastUID         uint32            `json:"last_uid"`
 	Checkpoints     map[string]uint32 `json:"checkpoints"`
 	Summary         map[string]int    `json:"summary"`
-	Samples         []ScanSample      `json:"samples"`
 	ErrorMsg        string            `json:"error_msg"`
 	CreatedAt       string            `json:"created_at"`
 	UpdatedAt       string            `json:"updated_at"`
 }
 
-type ScanSample struct {
+type ScanMatch struct {
 	Mailbox    string  `json:"mailbox"`
 	UID        uint32  `json:"uid"`
 	Sender     string  `json:"sender"`
@@ -534,7 +533,6 @@ func DefaultSettings() AppSettings {
 		IMAPPort:            993,
 		AIProvider:          "typesafe",
 		AIModel:             "jev-latest",
-		SpamAction:          "trash",
 		TrashThreshold:      0.85,
 		DeleteThreshold:     0.95,
 		AbuseEnabled:        true,
@@ -591,10 +589,8 @@ func (s *Store) GetSettings() (AppSettings, error) {
 			if v != "" {
 				cfg.AIModel = v
 			}
-		case "spam_action":
-			if v == "trash" || v == "delete" {
-				cfg.SpamAction = v
-			}
+		case "delete_enabled":
+			cfg.DeleteEnabled = v == "true"
 		case "trash_threshold":
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
 				cfg.TrashThreshold = f
@@ -649,7 +645,7 @@ func (s *Store) SaveSettings(cfg AppSettings) error {
 		{"imap_username", cfg.IMAPUsername, false},
 		{"ai_provider", cfg.AIProvider, false},
 		{"ai_model", cfg.AIModel, false},
-		{"spam_action", cfg.SpamAction, false},
+		{"delete_enabled", strconv.FormatBool(cfg.DeleteEnabled), false},
 		{"trash_threshold", strconv.FormatFloat(cfg.TrashThreshold, 'f', 4, 64), false},
 		{"delete_threshold", strconv.FormatFloat(cfg.DeleteThreshold, 'f', 4, 64), false},
 		{"abuse_enabled", strconv.FormatBool(cfg.AbuseEnabled), false},
@@ -940,30 +936,26 @@ func (s *Store) SaveScanJob(job ScanJob) error {
 	if job.Summary == nil {
 		job.Summary = map[string]int{}
 	}
-	if job.Samples == nil {
-		job.Samples = []ScanSample{}
-	}
 	cpBytes, _ := json.Marshal(job.Checkpoints)
 	summaryBytes, _ := json.Marshal(job.Summary)
-	samplesBytes, _ := json.Marshal(job.Samples)
 	_, err := s.db.Exec(
-		`INSERT INTO scan_jobs(id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET status=excluded.status, current_mailbox=excluded.current_mailbox, total_messages=excluded.total_messages, scanned_messages=excluded.scanned_messages, spam_found=excluded.spam_found, last_uid=excluded.last_uid, checkpoints_json=excluded.checkpoints_json, summary_json=excluded.summary_json, samples_json=excluded.samples_json, error_msg=excluded.error_msg, updated_at=excluded.updated_at`,
+		`INSERT INTO scan_jobs(id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, error_msg, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET status=excluded.status, current_mailbox=excluded.current_mailbox, total_messages=excluded.total_messages, scanned_messages=excluded.scanned_messages, spam_found=excluded.spam_found, last_uid=excluded.last_uid, checkpoints_json=excluded.checkpoints_json, summary_json=excluded.summary_json, error_msg=excluded.error_msg, updated_at=excluded.updated_at`,
 		job.ID, job.DateRange, boolToInt(job.DryRun), job.RatePerSec, job.Status, job.CurrentMailbox,
 		job.TotalMessages, job.ScannedMessages, job.SpamFound, job.LastUID, string(cpBytes),
-		string(summaryBytes), string(samplesBytes), job.ErrorMsg, job.CreatedAt, job.UpdatedAt,
+		string(summaryBytes), job.ErrorMsg, job.CreatedAt, job.UpdatedAt,
 	)
 	return err
 }
 
 func (s *Store) GetLatestScanJob() (*ScanJob, error) {
-	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs ORDER BY created_at DESC LIMIT 1`)
+	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, error_msg, created_at, updated_at FROM scan_jobs ORDER BY created_at DESC LIMIT 1`)
 	return scanJobFromRow(row)
 }
 
 func (s *Store) GetScanJob(id string) (*ScanJob, error) {
-	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, error_msg, created_at, updated_at FROM scan_jobs WHERE id = ?`, id)
 	return scanJobFromRow(row)
 }
 
@@ -975,14 +967,14 @@ func (s *Store) RecordScanResults(results []ScanResult) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scan_results(job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_headers, applied) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scan_results(job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_headers, applied) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	defer stmt.Close()
 	for _, r := range results {
-		if _, err := stmt.Exec(r.JobID, r.Mailbox, r.UIDValidity, r.UID, r.MessageID, r.Sender, r.SenderDomain, r.Subject, r.EmailDate, r.CategoryID, r.Confidence, r.Action, r.RawHeaders); err != nil {
+		if _, err := stmt.Exec(r.JobID, r.Mailbox, r.UIDValidity, r.UID, r.MessageID, r.Sender, r.SenderDomain, r.Subject, r.EmailDate, r.CategoryID, r.Confidence, r.Action, r.RawHeaders, boolToInt(r.Applied)); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -1007,6 +999,72 @@ func (s *Store) ListPendingScanResults(jobID string) ([]ScanResult, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ListScanMatches(jobID string) ([]ScanMatch, error) {
+	rows, err := s.db.Query(`SELECT mailbox, uid, sender, subject, email_date, category_id, confidence, action FROM scan_results
+		WHERE job_id = ? AND action IN ('trash', 'delete') ORDER BY confidence DESC, email_date DESC`, jobID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ScanMatch{}
+	for rows.Next() {
+		var m ScanMatch
+		if err := rows.Scan(&m.Mailbox, &m.UID, &m.Sender, &m.Subject, &m.EmailDate, &m.CategoryID, &m.Confidence, &m.Action); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ListTrashedEvents returns the latest trash event per Message-ID. The Message-ID is how a
+// trashed email is found again, since moving it gives it a new UID in the Trash mailbox.
+func (s *Store) ListTrashedEvents() (map[string]EmailEvent, error) {
+	rows, err := s.db.Query(`SELECT id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source
+		FROM email_events WHERE action = 'trash' AND message_id != '' ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]EmailEvent{}
+	for rows.Next() {
+		var ev EmailEvent
+		if err := rows.Scan(&ev.ID, &ev.Mailbox, &ev.UIDValidity, &ev.UID, &ev.MessageID, &ev.Sender, &ev.SenderDomain, &ev.Subject, &ev.EmailDate, &ev.ProcessedAt, &ev.CategoryID, &ev.Confidence, &ev.Action, &ev.Source); err != nil {
+			return nil, err
+		}
+		out[NormalizeMessageID(ev.MessageID)] = ev
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MarkTrashedEventsDeleted(messageIDs []string) error {
+	if len(messageIDs) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`UPDATE email_events SET action = 'delete' WHERE action = 'trash' AND message_id IN (?, ?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, id := range messageIDs {
+		norm := NormalizeMessageID(id)
+		if _, err := stmt.Exec(norm, "<"+norm+">"); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func NormalizeMessageID(id string) string {
+	return strings.Trim(strings.TrimSpace(id), "<>")
 }
 
 func (s *Store) MarkScanResultsApplied(ids []int64) error {
@@ -1035,8 +1093,8 @@ func (s *Store) MarkScanResultsApplied(ids []int64) error {
 func scanJobFromRow(row *sql.Row) (*ScanJob, error) {
 	var j ScanJob
 	var dryRun int
-	var cpJSON, sumJSON, sampJSON string
-	err := row.Scan(&j.ID, &j.DateRange, &dryRun, &j.RatePerSec, &j.Status, &j.CurrentMailbox, &j.TotalMessages, &j.ScannedMessages, &j.SpamFound, &j.LastUID, &cpJSON, &sumJSON, &sampJSON, &j.ErrorMsg, &j.CreatedAt, &j.UpdatedAt)
+	var cpJSON, sumJSON string
+	err := row.Scan(&j.ID, &j.DateRange, &dryRun, &j.RatePerSec, &j.Status, &j.CurrentMailbox, &j.TotalMessages, &j.ScannedMessages, &j.SpamFound, &j.LastUID, &cpJSON, &sumJSON, &j.ErrorMsg, &j.CreatedAt, &j.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1048,7 +1106,6 @@ func scanJobFromRow(row *sql.Row) (*ScanJob, error) {
 	_ = json.Unmarshal([]byte(cpJSON), &j.Checkpoints)
 	j.Summary = map[string]int{}
 	_ = json.Unmarshal([]byte(sumJSON), &j.Summary)
-	_ = json.Unmarshal([]byte(sampJSON), &j.Samples)
 	return &j, nil
 }
 

@@ -59,7 +59,7 @@ struct OnboardingView: View {
     ]
     @State private var newCategoryName = ""
     @State private var newCategoryDescription = ""
-    @State private var spamAction = "trash"
+    @State private var permanentDeleteOn = false
 
     // Step 4: Deploy progress
     @State private var deployLogs: [String] = []
@@ -402,11 +402,8 @@ struct OnboardingView: View {
 
             GroupBox("Spam Action") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker("When spam is detected", selection: $spamAction) {
-                        Text("Move to Trash (threshold 85%)").tag("trash")
-                        Text("Delete Permanently (threshold 95%)").tag("delete")
-                    }
-                    .pickerStyle(.radioGroup)
+                    Text("Spam at 85% confidence or higher moves to Trash.")
+                    Toggle("Also permanently delete spam at 95% or higher", isOn: $permanentDeleteOn)
                     Text("You can adjust confidence thresholds and add allowlist rules anytime in Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -690,7 +687,7 @@ struct OnboardingView: View {
             cfg.aiProvider = aiProvider
             cfg.aiAPIKey = aiAPIKey.trimmingCharacters(in: .whitespaces)
             cfg.aiModel = aiModel.trimmingCharacters(in: .whitespaces)
-            cfg.spamAction = spamAction
+            cfg.deleteEnabled = permanentDeleteOn
             _ = try await client.updateSettings(cfg)
 
             deployLogs.append("Applying selected spam categories...")

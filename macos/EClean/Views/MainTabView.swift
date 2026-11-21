@@ -3,6 +3,7 @@ import SwiftUI
 struct MainTabView: View {
     @Environment(AppState.self) private var appState
     @State private var showAbuseReview = false
+    @State private var showTrash = false
 
     var body: some View {
         @Bindable var bindableState = appState
@@ -62,6 +63,13 @@ struct MainTabView: View {
                         .help(hasQueuedDomains ? "Review domains queued for abuse reporting" : "No domains queued for abuse reporting")
 
                         Button {
+                            showTrash = true
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .help("Review spam in Trash and delete it permanently")
+
+                        Button {
                             appState.showSettings = true
                         } label: {
                             Image(systemName: "gearshape")
@@ -71,6 +79,10 @@ struct MainTabView: View {
                 }
                 .sheet(isPresented: $showAbuseReview) {
                     AbuseReviewSheet()
+                        .environment(appState)
+                }
+                .sheet(isPresented: $showTrash) {
+                    TrashSheet()
                         .environment(appState)
                 }
                 .sheet(isPresented: $bindableState.showSettings) {

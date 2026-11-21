@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		0577E31A7AE1AA2EB1472B38 /* HistoricalScanView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ED3345606F5BA6DBEE9F44B /* HistoricalScanView.swift */; };
+		0741937A27DF39754087B1C0 /* TrashSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3EAF639F54482FDB297669A /* TrashSheet.swift */; };
 		0FD1DD67A6C94047EF8AC9E9 /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = E57ED8E085D16BBE663210E6 /* KeychainStore.swift */; };
 		125CDFD925ACFC094EB0E40E /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4E284EEF59D087515A1AA6A /* MainTabView.swift */; };
 		45DC670C70C7EFF6E972F47B /* SSHDeployer.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF5C89AFA30C925A3BC6A67C /* SSHDeployer.swift */; };
@@ -40,6 +41,7 @@
 		B9E5DB074BD306CDA144E14C /* SettingsSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsSheet.swift; sourceTree = "<group>"; };
 		BF5C89AFA30C925A3BC6A67C /* SSHDeployer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHDeployer.swift; sourceTree = "<group>"; };
 		C4E284EEF59D087515A1AA6A /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
+		D3EAF639F54482FDB297669A /* TrashSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrashSheet.swift; sourceTree = "<group>"; };
 		D524158712381FCDB00275D8 /* PairingApprovalSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingApprovalSheet.swift; sourceTree = "<group>"; };
 		E57ED8E085D16BBE663210E6 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainStore.swift; sourceTree = "<group>"; };
 		F6B6E20CC47BE7F4A7B18F91 /* EClean.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = EClean.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -92,6 +94,7 @@
 				FC02DA157A4D9654258A35B4 /* Onboarding */,
 				7541E74BECEE6503EFF99B2F /* Pairing */,
 				4E131E964A2F0FDEA7588E49 /* Settings */,
+				A26FC4F8C1472B5071A09909 /* Trash */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -113,6 +116,14 @@
 				5E85F25CEAD7913E695E387A /* Views */,
 			);
 			path = EClean;
+			sourceTree = "<group>";
+		};
+		A26FC4F8C1472B5071A09909 /* Trash */ = {
+			isa = PBXGroup;
+			children = (
+				D3EAF639F54482FDB297669A /* TrashSheet.swift */,
+			);
+			path = Trash;
 			sourceTree = "<group>";
 		};
 		A861A5F3BF0C5BF64FAC0F02 = {
@@ -149,7 +160,7 @@
 			path = Onboarding;
 			sourceTree = "<group>";
 		};
-		"TEMP_510A20F6-CA20-4A8C-8EAA-C7698E63994C" /* Resources */ = {
+		"TEMP_F0554EE4-759C-4EA6-A6C1-22A92F6D3327" /* Resources */ = {
 			isa = PBXGroup;
 			children = (
 			);
@@ -241,6 +252,7 @@
 				E710C05EF7B56A2A41D3C05F /* SSEClient.swift in Sources */,
 				45DC670C70C7EFF6E972F47B /* SSHDeployer.swift in Sources */,
 				BF27DE0EA725B37375B5EF07 /* SettingsSheet.swift in Sources */,
+				0741937A27DF39754087B1C0 /* TrashSheet.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

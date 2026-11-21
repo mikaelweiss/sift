@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	maxDryRunSamples = 50
 	scanBatchSize    = 50
 	scanConcurrency  = jev.MaxConcurrentRequests
 	scanFetchConns   = 8
@@ -70,7 +69,6 @@ func (s *Scanner) Start(dateRange string, dryRun bool, ratePerSec float64) (db.S
 		Status:      "running",
 		Checkpoints: map[string]uint32{},
 		Summary:     map[string]int{},
-		Samples:     []db.ScanSample{},
 	}
 	if err := s.store.SaveScanJob(job); err != nil {
 		s.mu.Unlock()
@@ -598,18 +596,6 @@ func (s *Scanner) classify(ctx context.Context, t classifyTask, progress *scanPr
 			job.Summary = map[string]int{}
 		}
 		job.Summary[dec.CategoryID]++
-		if len(job.Samples) < maxDryRunSamples {
-			job.Samples = append(job.Samples, db.ScanSample{
-				Mailbox:    t.batch.mailbox,
-				UID:        uint32(msg.uid),
-				Sender:     msg.input.SenderEmail,
-				Subject:    msg.input.Subject,
-				EmailDate:  msg.input.EmailDate.UTC().Format(time.RFC3339),
-				CategoryID: dec.CategoryID,
-				Confidence: dec.Confidence,
-				Action:     dec.Action,
-			})
-		}
 	}
 	if time.Since(progress.lastEmit) < 300*time.Millisecond {
 		progress.mu.Unlock()
@@ -659,7 +645,7 @@ func (s *Scanner) finishBatch(ctx context.Context, actions *actionConn, b *scanB
 		if actions.uidValidity != b.uidValidity {
 			return fmt.Errorf("%s changed during the scan (UIDVALIDITY %d, was %d)", b.mailbox, actions.uidValidity, b.uidValidity)
 		}
-		s.applyBatch(ctx, actions.c, b, trashMailbox)
+		s.applyBatch(ctx, actions.c, job.ID, b, trashMailbox)
 	}
 	s.persist(progress.update(func(j *db.ScanJob) {
 		j.CurrentMailbox = b.mailbox
@@ -678,32 +664,37 @@ func (s *Scanner) recordDryRunBatch(jobID string, b *scanBatch) {
 			log.Printf("scan %s UID %d classify failed: %v", b.mailbox, r.uid, r.err)
 			continue
 		}
-		rawHdr := ""
-		if (r.decision.Action == "trash" || r.decision.Action == "delete") && wAgeWithin7Days(r.input.EmailDate) {
-			rawHdr = r.input.RawHeaders
-		}
-		rows = append(rows, db.ScanResult{
-			JobID:        jobID,
-			Mailbox:      b.mailbox,
-			UIDValidity:  b.uidValidity,
-			UID:          uint32(r.uid),
-			MessageID:    r.input.MessageID,
-			Sender:       r.input.SenderEmail,
-			SenderDomain: r.input.SenderDomain,
-			Subject:      r.input.Subject,
-			EmailDate:    r.input.EmailDate.UTC().Format(time.RFC3339),
-			CategoryID:   r.decision.CategoryID,
-			Confidence:   r.decision.Confidence,
-			Action:       r.decision.Action,
-			RawHeaders:   rawHdr,
-		})
+		rows = append(rows, scanResultRow(jobID, b, r, r.decision.Action, false))
 	}
 	if err := s.store.RecordScanResults(rows); err != nil {
 		log.Printf("scan %s record dry run results failed: %v", b.mailbox, err)
 	}
 }
 
-func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, b *scanBatch, trashMailbox string) {
+func scanResultRow(jobID string, b *scanBatch, r classifiedMsg, action string, applied bool) db.ScanResult {
+	rawHdr := ""
+	if (action == "trash" || action == "delete") && wAgeWithin7Days(r.input.EmailDate) {
+		rawHdr = r.input.RawHeaders
+	}
+	return db.ScanResult{
+		JobID:        jobID,
+		Mailbox:      b.mailbox,
+		UIDValidity:  b.uidValidity,
+		UID:          uint32(r.uid),
+		MessageID:    r.input.MessageID,
+		Sender:       r.input.SenderEmail,
+		SenderDomain: r.input.SenderDomain,
+		Subject:      r.input.Subject,
+		EmailDate:    r.input.EmailDate.UTC().Format(time.RFC3339),
+		CategoryID:   r.decision.CategoryID,
+		Confidence:   r.decision.Confidence,
+		Action:       action,
+		RawHeaders:   rawHdr,
+		Applied:      applied,
+	}
+}
+
+func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, jobID string, b *scanBatch, trashMailbox string) {
 	var trashUIDs, deleteUIDs []goimap.UID
 	for _, r := range b.msgs {
 		if r.err != nil {
@@ -733,6 +724,7 @@ func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, b *scanB
 	}
 
 	var events []db.EmailEvent
+	var results []db.ScanResult
 	var abuseCandidates []abuse.Candidate
 	for _, r := range b.msgs {
 		if r.err != nil {
@@ -758,6 +750,7 @@ func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, b *scanB
 			Action:       actionTaken,
 			Source:       "backfill",
 		})
+		results = append(results, scanResultRow(jobID, b, r, actionTaken, true))
 		if (actionTaken == "trash" || actionTaken == "delete") && wAgeWithin7Days(r.input.EmailDate) {
 			abuseCandidates = append(abuseCandidates, abuse.Candidate{
 				SenderEmail:  r.input.SenderEmail,
@@ -772,6 +765,9 @@ func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, b *scanB
 	}
 	if err := s.store.RecordEmailEvents(events); err != nil {
 		log.Printf("scan %s record events failed: %v", b.mailbox, err)
+	}
+	if err := s.store.RecordScanResults(results); err != nil {
+		log.Printf("scan %s record results failed: %v", b.mailbox, err)
 	}
 	if s.abuseSvc != nil {
 		for _, cand := range abuseCandidates {
@@ -991,9 +987,6 @@ func cloneScanJob(j db.ScanJob) db.ScanJob {
 	cp.Checkpoints = make(map[string]uint32, len(j.Checkpoints))
 	for k, v := range j.Checkpoints {
 		cp.Checkpoints[k] = v
-	}
-	if len(j.Samples) > 0 {
-		cp.Samples = append([]db.ScanSample(nil), j.Samples...)
 	}
 	return cp
 }

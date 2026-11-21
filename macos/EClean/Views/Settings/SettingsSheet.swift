@@ -220,25 +220,31 @@ struct SettingsSheet: View {
                     .padding(8)
                 }
 
-                GroupBox("Spam Action & Thresholds") {
+                GroupBox("Spam Thresholds") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker("When spam is detected", selection: $draftSettings.spamAction) {
-                            Text("Move to Trash").tag("trash")
-                            Text("Delete Permanently").tag("delete")
-                        }
-                        .pickerStyle(.segmented)
-
                         HStack {
-                            Text("Trash threshold: \(Int(draftSettings.trashThreshold * 100))%")
+                            Text("Move to Trash at: \(Int(draftSettings.trashThreshold * 100))%")
                                 .frame(width: 210, alignment: .leading)
                             Slider(value: $draftSettings.trashThreshold, in: 0.50...0.99, step: 0.01)
                         }
 
+                        Divider()
+
+                        Toggle("Permanently delete high-confidence spam", isOn: $draftSettings.deleteEnabled)
+
                         HStack {
-                            Text("Permanent delete threshold: \(Int(draftSettings.deleteThreshold * 100))%")
+                            Text("Delete permanently at: \(Int(draftSettings.deleteThreshold * 100))%")
                                 .frame(width: 210, alignment: .leading)
                             Slider(value: $draftSettings.deleteThreshold, in: 0.70...0.99, step: 0.01)
                         }
+                        .disabled(!draftSettings.deleteEnabled)
+                        .opacity(draftSettings.deleteEnabled ? 1 : 0.45)
+
+                        Text(draftSettings.deleteEnabled
+                             ? "Spam at or above the delete threshold skips the Trash. Everything else above the trash threshold goes to Trash."
+                             : "All detected spam goes to Trash, where you can review it before deleting.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .padding(8)
                 }

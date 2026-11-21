@@ -91,6 +91,11 @@ All `/api/*` endpoints require `Authorization: Bearer <device_token>` except:
 - `POST /api/scans/{id}/resume` -> `{"job": ScanJob}`
 - `POST /api/scans/{id}/cancel` -> `{"job": ScanJob}`
 - `POST /api/scans/{id}/apply` -> `{"job": ScanJob}` (applies a completed Dry Run without re-running Jev)
+- `GET /api/scans/{id}/matches` -> `{"matches": [ScanMatch]}` (every email the scan marked for trash or delete, highest confidence first)
+
+### Trash
+- `GET /api/trash` -> `{"mailbox", "uid_validity", "items": [TrashItem]}` (only messages EClean moved to Trash, matched by Message-ID)
+- `POST /api/trash/delete` (body: `{"uid_validity", "uids": [UID]}`) -> `{"deleted": N}` (permanently deletes listed UIDs that EClean trashed, ignores the rest)
 
 ### Abuse Reporting
 - `GET /api/abuse/queue` -> `{"items": [AbuseQueueItem]}`

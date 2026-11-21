@@ -127,7 +127,7 @@ struct HomeView: View {
     }
 
     private var timeframeSubtitle: String {
-        let mode = appState.settings.spamAction == "delete" ? "Permanent delete" : "Move to Trash"
+        let mode = appState.settings.deleteEnabled ? "Trash + permanent delete" : "Move to Trash"
         let activeCount = appState.categories.filter(\.enabled).count
         let range = selectedDays == 0 ? "All time" : "Last \(selectedDays) days"
         return "\(range) · \(activeCount) active categories · \(mode)"

@@ -6,6 +6,9 @@ struct HistoricalScanView: View {
     @State private var dryRun = true
     @State private var isSubmitting = false
     @State private var errorMessage: String?
+    @State private var showMatches = false
+    @State private var matches: [ScanMatch] = []
+    @State private var matchesJobID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -149,32 +152,76 @@ struct HistoricalScanView: View {
                     .foregroundStyle(.red)
             }
 
-            if !job.samples.isEmpty {
-                DisclosureGroup("Matched Emails (\(job.samples.count))") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(job.samples.prefix(20)) { sample in
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(sample.subject.isEmpty ? "(No subject)" : sample.subject)
-                                        .font(.caption.weight(.medium))
-                                        .lineLimit(1)
-                                    Text("\(sample.mailbox ?? "INBOX") · \(sample.sender)")
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                Text("\(sample.categoryID) · \(Int(sample.confidence * 100))%")
-                                    .font(.caption2.monospacedDigit())
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(Color.orange.opacity(0.15), in: Capsule())
+            if job.spamFound > 0 {
+                matchedEmails(job)
+            }
+        }
+    }
+
+    private func matchedEmails(_ job: ScanJob) -> some View {
+        DisclosureGroup(isExpanded: $showMatches) {
+            Group {
+                if matches.isEmpty {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(maxWidth: .infinity, minHeight: 60)
+                } else {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(matches) { match in
+                                matchRow(match)
                             }
                         }
+                        .padding(.vertical, 6)
+                        .padding(.trailing, 12)
                     }
-                    .padding(.top, 6)
+                    .frame(height: 280)
                 }
-                .font(.caption)
             }
+            .padding(.top, 4)
+        } label: {
+            Text("Matched Emails (\(job.spamFound))")
+        }
+        .font(.caption)
+        .task(id: "\(job.id)-\(job.status)-\(job.spamFound)") {
+            await loadMatches(job)
+        }
+    }
+
+    private func matchRow(_ match: ScanMatch) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(match.subject.isEmpty ? "(No subject)" : match.subject)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Text("\(match.mailbox ?? "INBOX") · \(match.sender)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if match.action == "delete" {
+                Image(systemName: "trash.slash")
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .help("Deletes permanently")
+            }
+            Text("\(match.categoryID) · \(Int(match.confidence * 100))%")
+                .font(.caption2.monospacedDigit())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.orange.opacity(0.15), in: Capsule())
+        }
+    }
+
+    private func loadMatches(_ job: ScanJob) async {
+        guard let client = appState.apiClient else { return }
+        if matchesJobID != job.id {
+            matches = []
+            matchesJobID = job.id
+        }
+        if let loaded = try? await client.scanMatches(id: job.id) {
+            matches = loaded
         }
     }
 
@@ -196,10 +243,14 @@ struct HistoricalScanView: View {
     }
 
     private func applyButtonTitle(spamCount: Int) -> String {
-        if appState.settings.spamAction == "delete" {
+        let deletes = matches.filter { $0.action == "delete" }.count
+        guard deletes > 0, matches.count == spamCount else {
+            return "Apply: Move \(spamCount) to Trash"
+        }
+        if deletes == spamCount {
             return "Apply: Delete \(spamCount) Permanently"
         }
-        return "Apply: Move \(spamCount) to Trash"
+        return "Apply: Trash \(spamCount - deletes), Delete \(deletes)"
     }
 
     private func applyScan(_ id: String) async {

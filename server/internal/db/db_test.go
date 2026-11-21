@@ -26,7 +26,7 @@ func TestStoreLifecycle(t *testing.T) {
 	cfg.IMAPPassword = "abcd-efgh-ijkl-mnop"
 	cfg.AIProvider = "openrouter"
 	cfg.AIAPIKey = "sk-or-test-key"
-	cfg.SpamAction = "delete"
+	cfg.DeleteEnabled = true
 	if err := store.SaveSettings(cfg); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
@@ -35,7 +35,7 @@ func TestStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSettings: %v", err)
 	}
-	if loaded.IMAPPassword != cfg.IMAPPassword || loaded.AIAPIKey != cfg.AIAPIKey || loaded.SpamAction != "delete" {
+	if loaded.IMAPPassword != cfg.IMAPPassword || loaded.AIAPIKey != cfg.AIAPIKey || !loaded.DeleteEnabled {
 		t.Fatalf("settings round-trip mismatch: %+v", loaded)
 	}
 

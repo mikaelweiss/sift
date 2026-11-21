@@ -287,6 +287,24 @@ final class APIClient {
         return job
     }
 
+    func scanMatches(id: String) async throws -> [ScanMatch] {
+        let resp: ScanMatchesResponse = try await send("GET", path: "/api/scans/\(id)/matches")
+        return resp.matches
+    }
+
+    func listTrash() async throws -> TrashListing {
+        try await send("GET", path: "/api/trash")
+    }
+
+    func deleteFromTrash(uidValidity: UInt32, uids: [UInt32]) async throws -> Int {
+        struct Payload: Encodable {
+            let uid_validity: UInt32
+            let uids: [UInt32]
+        }
+        let resp: TrashDeleteResponse = try await send("POST", path: "/api/trash/delete", body: Payload(uid_validity: uidValidity, uids: uids))
+        return resp.deleted
+    }
+
     func listAbuseQueue() async throws -> [AbuseQueueItem] {
         let resp: AbuseQueueResponse = try await send("GET", path: "/api/abuse/queue")
         return resp.items

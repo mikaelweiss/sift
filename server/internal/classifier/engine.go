@@ -174,22 +174,19 @@ func (s *Snapshot) Evaluate(ctx context.Context, in EmailInput) (Decision, error
 		dec.CategoryName = c.Name
 	}
 
-	if s.cfg.SpamAction == "delete" {
-		threshold := s.cfg.DeleteThreshold
-		if threshold <= 0 {
-			threshold = 0.95
-		}
-		if topScore >= threshold {
-			dec.Action = "delete"
-		}
-	} else {
-		threshold := s.cfg.TrashThreshold
-		if threshold <= 0 {
-			threshold = 0.85
-		}
-		if topScore >= threshold {
-			dec.Action = "trash"
-		}
+	trashThreshold := s.cfg.TrashThreshold
+	if trashThreshold <= 0 {
+		trashThreshold = 0.85
+	}
+	deleteThreshold := s.cfg.DeleteThreshold
+	if deleteThreshold <= 0 {
+		deleteThreshold = 0.95
+	}
+	if topScore >= trashThreshold {
+		dec.Action = "trash"
+	}
+	if s.cfg.DeleteEnabled && topScore >= deleteThreshold {
+		dec.Action = "delete"
 	}
 
 	return dec, nil

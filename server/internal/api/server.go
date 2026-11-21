@@ -104,6 +104,10 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/scans/{id}/resume", s.requireAuth(http.HandlerFunc(s.handleResumeScan)))
 	mux.Handle("POST /api/scans/{id}/cancel", s.requireAuth(http.HandlerFunc(s.handleCancelScan)))
 	mux.Handle("POST /api/scans/{id}/apply", s.requireAuth(http.HandlerFunc(s.handleApplyScan)))
+	mux.Handle("GET /api/scans/{id}/matches", s.requireAuth(http.HandlerFunc(s.handleScanMatches)))
+
+	mux.Handle("GET /api/trash", s.requireAuth(http.HandlerFunc(s.handleListTrash)))
+	mux.Handle("POST /api/trash/delete", s.requireAuth(http.HandlerFunc(s.handleDeleteTrash)))
 
 	mux.Handle("GET /api/abuse/queue", s.requireAuth(http.HandlerFunc(s.handleListAbuseQueue)))
 	mux.Handle("POST /api/abuse/{id}/approve", s.requireAuth(http.HandlerFunc(s.handleApproveAbuse)))
@@ -677,6 +681,41 @@ func (s *Server) handleApplyScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"job": job})
+}
+
+func (s *Server) handleScanMatches(w http.ResponseWriter, r *http.Request) {
+	matches, err := s.store.ListScanMatches(r.PathValue("id"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"matches": matches})
+}
+
+func (s *Server) handleListTrash(w http.ResponseWriter, _ *http.Request) {
+	listing, err := imap.ListTrash(s.store)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, listing)
+}
+
+func (s *Server) handleDeleteTrash(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		UIDValidity uint32   `json:"uid_validity"`
+		UIDs        []uint32 `json:"uids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	deleted, err := imap.DeleteFromTrash(s.store, body.UIDValidity, body.UIDs)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
 }
 
 func (s *Server) handleListAbuseQueue(w http.ResponseWriter, _ *http.Request) {

@@ -57,9 +57,9 @@ func TestClassifierAllowlistAndThresholds(t *testing.T) {
 		t.Fatalf("expected trash phishing_scams, got %+v", dec)
 	}
 
-	// Switch to delete mode (0.95 threshold) -> 0.90 stays keep.
+	// Permanent delete on (0.95 threshold) -> 0.90 still trashes.
 	cfg, _ := store.GetSettings()
-	cfg.SpamAction = "delete"
+	cfg.DeleteEnabled = true
 	_ = store.SaveSettings(cfg)
 
 	dec, err = engine.Evaluate(context.Background(), EmailInput{
@@ -69,8 +69,8 @@ func TestClassifierAllowlistAndThresholds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete borderline eval: %v", err)
 	}
-	if dec.Action != "keep" {
-		t.Fatalf("expected borderline 0.90 kept in delete mode, got %+v", dec)
+	if dec.Action != "trash" {
+		t.Fatalf("expected 0.90 trashed below the delete threshold, got %+v", dec)
 	}
 
 	stub.scores["phishing_scams"] = 0.97

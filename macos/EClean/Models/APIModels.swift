@@ -43,7 +43,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var aiProvider: String = "typesafe"
     var aiAPIKey: String?
     var aiModel: String = "jev-latest"
-    var spamAction: String = "trash"
+    var deleteEnabled: Bool = false
     var trashThreshold: Double = 0.85
     var deleteThreshold: Double = 0.95
     var abuseEnabled: Bool = true
@@ -69,7 +69,7 @@ struct AppSettings: Codable, Equatable, Sendable {
         case aiProvider = "ai_provider"
         case aiAPIKey = "ai_api_key"
         case aiModel = "ai_model"
-        case spamAction = "spam_action"
+        case deleteEnabled = "delete_enabled"
         case trashThreshold = "trash_threshold"
         case deleteThreshold = "delete_threshold"
         case abuseEnabled = "abuse_enabled"
@@ -159,7 +159,7 @@ struct DailyStatsResponse: Codable, Sendable {
     }
 }
 
-struct ScanSample: Codable, Identifiable, Sendable {
+struct ScanMatch: Codable, Identifiable, Sendable {
     var mailbox: String?
     var uid: UInt32
     var sender: String
@@ -190,7 +190,6 @@ struct ScanJob: Codable, Identifiable, Sendable {
     var spamFound: Int
     var lastUID: UInt32
     var summary: [String: Int]
-    var samples: [ScanSample]
     var errorMsg: String
     var createdAt: String
     var updatedAt: String
@@ -201,7 +200,7 @@ struct ScanJob: Codable, Identifiable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, status, summary, samples
+        case id, status, summary
         case dateRange = "date_range"
         case dryRun = "dry_run"
         case ratePerSec = "rate_per_sec"
@@ -218,6 +217,42 @@ struct ScanJob: Codable, Identifiable, Sendable {
 
 struct ScanJobEnvelope: Codable, Sendable {
     var job: ScanJob?
+}
+
+struct ScanMatchesResponse: Codable, Sendable {
+    var matches: [ScanMatch]
+}
+
+struct TrashItem: Codable, Identifiable, Sendable {
+    var uid: UInt32
+    var sender: String
+    var subject: String
+    var emailDate: String
+    var categoryID: String
+    var confidence: Double
+
+    var id: UInt32 { uid }
+
+    enum CodingKeys: String, CodingKey {
+        case uid, sender, subject, confidence
+        case emailDate = "email_date"
+        case categoryID = "category_id"
+    }
+}
+
+struct TrashListing: Codable, Sendable {
+    var mailbox: String
+    var uidValidity: UInt32
+    var items: [TrashItem]
+
+    enum CodingKeys: String, CodingKey {
+        case mailbox, items
+        case uidValidity = "uid_validity"
+    }
+}
+
+struct TrashDeleteResponse: Codable, Sendable {
+    var deleted: Int
 }
 
 struct AbuseQueueItem: Codable, Identifiable, Equatable, Sendable {
