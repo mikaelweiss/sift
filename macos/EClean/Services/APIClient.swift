@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import Security
 
-final class PinnedSessionDelegate: NSObject, URLSessionDelegate {
+final class PinnedSessionDelegate: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
     private let expectedFingerprint: String?
 
     init(expectedFingerprint: String?) {
@@ -15,6 +15,22 @@ final class PinnedSessionDelegate: NSObject, URLSessionDelegate {
     func urlSession(
         _ session: URLSession,
         didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handleChallenge(challenge, completionHandler: completionHandler)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        handleChallenge(challenge, completionHandler: completionHandler)
+    }
+
+    private func handleChallenge(
+        _ challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         guard challenge.protectionSpace.authenticationMethod == NSURLAuthenticationMethodServerTrust,

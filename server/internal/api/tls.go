@@ -29,8 +29,13 @@ func LoadOrGenerateTLS(dataDir string) (tls.Certificate, string, error) {
 		if _, kErr := os.Stat(keyPath); kErr == nil {
 			cert, loadErr := tls.LoadX509KeyPair(certPath, keyPath)
 			if loadErr == nil && len(cert.Certificate) > 0 {
-				sum := sha256.Sum256(cert.Certificate[0])
-				return cert, hex.EncodeToString(sum[:]), nil
+				if leaf, parseErr := x509.ParseCertificate(cert.Certificate[0]); parseErr == nil {
+					lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
+					if time.Now().UTC().Before(leaf.NotAfter.Add(-7*24*time.Hour)) && lifetime <= 398*24*time.Hour {
+						sum := sha256.Sum256(cert.Certificate[0])
+						return cert, hex.EncodeToString(sum[:]), nil
+					}
+				}
 			}
 		}
 	}
@@ -66,7 +71,7 @@ func LoadOrGenerateTLS(dataDir string) (tls.Certificate, string, error) {
 			Organization: []string{"EClean"},
 		},
 		NotBefore:             time.Now().UTC().Add(-time.Hour),
-		NotAfter:              time.Now().UTC().Add(10 * 365 * 24 * time.Hour),
+		NotAfter:              time.Now().UTC().Add(390 * 24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,

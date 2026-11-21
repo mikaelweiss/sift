@@ -540,10 +540,10 @@ struct OnboardingView: View {
             port: serverPort
         )
 
-        // First probe if an eclean server is already reachable directly over HTTPS.
+        // First probe if an already-paired eclean server is reachable directly over HTTPS.
         if let probeURL = URL(string: "https://\(target.host):\(target.port)") {
             let probeClient = APIClient(baseURL: probeURL, token: nil, tlsFingerprint: nil)
-            if let health = try? await probeClient.health(), !health.tlsFingerprint.isEmpty {
+            if let health = try? await probeClient.health(), !health.tlsFingerprint.isEmpty, health.pairedDevices > 0 {
                 existingFingerprint = health.tlsFingerprint
                 existingPort = target.port
                 step = .pairExisting
@@ -554,7 +554,7 @@ struct OnboardingView: View {
 
         do {
             let info = try await SSHDeployer.inspectHost(target: target)
-            if info.alreadyInstalled, let fp = info.existingFingerprint, !fp.isEmpty {
+            if info.alreadyInstalled, info.existingPairedDevices > 0, let fp = info.existingFingerprint, !fp.isEmpty {
                 existingFingerprint = fp
                 existingPort = info.existingPort
                 step = .pairExisting
