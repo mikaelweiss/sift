@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mikaelweiss/eclean/server/internal/abuse"
-	"github.com/mikaelweiss/eclean/server/internal/db"
-	"github.com/mikaelweiss/eclean/server/internal/imap"
-	"github.com/mikaelweiss/eclean/server/internal/jev"
+	"github.com/mikaelweiss/sift/server/internal/abuse"
+	"github.com/mikaelweiss/sift/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/imap"
+	"github.com/mikaelweiss/sift/server/internal/jev"
 )
 
 type pairRequest struct {

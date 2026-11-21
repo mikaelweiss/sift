@@ -170,7 +170,7 @@ func (c *Client) EvaluateNoul(ctx context.Context, state any, questions map[stri
 		req.Header.Set("Authorization", "Bearer "+c.APIKey)
 		req.Header.Set("Content-Type", "application/json")
 		if c.Provider == "openrouter" {
-			req.Header.Set("X-Title", "EClean")
+			req.Header.Set("X-Title", "Sift")
 		}
 
 		resp, err := httpClient.Do(req)

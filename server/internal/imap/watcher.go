@@ -13,9 +13,9 @@ import (
 
 	goimap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/mikaelweiss/eclean/server/internal/abuse"
-	"github.com/mikaelweiss/eclean/server/internal/classifier"
-	"github.com/mikaelweiss/eclean/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/abuse"
+	"github.com/mikaelweiss/sift/server/internal/classifier"
+	"github.com/mikaelweiss/sift/server/internal/db"
 )
 
 type StatusSnapshot struct {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mikaelweiss/eclean/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/db"
 )
 
 type Candidate struct {
@@ -198,8 +198,8 @@ func (s *Service) SendTest(ctx context.Context, toEmail string) error {
 		ctx,
 		cfg,
 		[]string{toEmail},
-		"[EClean] Abuse reporting SMTP test",
-		"This test message confirms EClean can deliver abuse reports using your configured SMTP settings.\n",
+		"[Sift] Abuse reporting SMTP test",
+		"This test message confirms Sift can deliver abuse reports using your configured SMTP settings.\n",
 	)
 }
 

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikaelweiss/eclean/server/internal/classifier"
+	"github.com/mikaelweiss/sift/server/internal/classifier"
 )
 
 var (

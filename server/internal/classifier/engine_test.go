@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/mikaelweiss/eclean/server/internal/db"
-	"github.com/mikaelweiss/eclean/server/internal/jev"
+	"github.com/mikaelweiss/sift/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/jev"
 )
 
 type stubEvaluator struct {

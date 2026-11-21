@@ -1,4 +1,4 @@
-module github.com/mikaelweiss/eclean/server
+module github.com/mikaelweiss/sift/server
 
 go 1.26.0
 

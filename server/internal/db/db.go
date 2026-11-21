@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikaelweiss/eclean/server/internal/config"
+	"github.com/mikaelweiss/sift/server/internal/config"
 	_ "modernc.org/sqlite"
 )
 
@@ -175,7 +175,7 @@ func Open(dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	dbPath := filepath.Join(dataDir, "eclean.db")
+	dbPath := filepath.Join(dataDir, "sift.db")
 	conn, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)

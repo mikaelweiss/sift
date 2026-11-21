@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mikaelweiss/eclean/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/db"
 )
 
 type Sender interface {

@@ -11,7 +11,7 @@ struct MainTabView: View {
 
         NavigationStack {
             HomeView()
-                .navigationTitle("EClean")
+                .navigationTitle("Sift")
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
                         Button {

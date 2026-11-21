@@ -7,7 +7,7 @@ import (
 
 	goimap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/mikaelweiss/eclean/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/db"
 )
 
 type TrashItem struct {
@@ -25,7 +25,7 @@ type TrashListing struct {
 	Items       []TrashItem `json:"items"`
 }
 
-// trashSession holds the Trash mailbox selected, paired with the Message-IDs EClean trashed.
+// trashSession holds the Trash mailbox selected, paired with the Message-IDs Sift trashed.
 // Matching by Message-ID keeps mail the user trashed themselves out of reach.
 type trashSession struct {
 	c           *imapclient.Client
@@ -62,8 +62,8 @@ func (t *trashSession) close() {
 	_ = t.c.Close()
 }
 
-// ecleanMessages returns the messages in fetchSet that EClean trashed, keyed by UID.
-func (t *trashSession) ecleanMessages(fetchSet goimap.NumSet) (map[uint32]db.EmailEvent, error) {
+// siftMessages returns the messages in fetchSet that Sift trashed, keyed by UID.
+func (t *trashSession) siftMessages(fetchSet goimap.NumSet) (map[uint32]db.EmailEvent, error) {
 	msgs, err := t.c.Fetch(fetchSet, &goimap.FetchOptions{UID: true, Envelope: true}).Collect()
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", t.mailbox, err)
@@ -93,7 +93,7 @@ func ListTrash(store *db.Store) (TrashListing, error) {
 	}
 	var all goimap.SeqSet
 	all.AddRange(1, 0)
-	found, err := t.ecleanMessages(all)
+	found, err := t.siftMessages(all)
 	if err != nil {
 		return TrashListing{}, err
 	}
@@ -117,7 +117,7 @@ func ListTrash(store *db.Store) (TrashListing, error) {
 	return listing, nil
 }
 
-// DeleteFromTrash permanently removes the given Trash UIDs that EClean put there and returns how many it removed.
+// DeleteFromTrash permanently removes the given Trash UIDs that Sift put there and returns how many it removed.
 func DeleteFromTrash(store *db.Store, uidValidity uint32, uids []uint32) (int, error) {
 	if len(uids) == 0 {
 		return 0, nil
@@ -135,7 +135,7 @@ func DeleteFromTrash(store *db.Store, uidValidity uint32, uids []uint32) (int, e
 	for _, u := range uids {
 		requested.AddNum(goimap.UID(u))
 	}
-	found, err := t.ecleanMessages(requested)
+	found, err := t.siftMessages(requested)
 	if err != nil {
 		return 0, err
 	}

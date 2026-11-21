@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mikaelweiss/eclean/server/internal/db"
-	"github.com/mikaelweiss/eclean/server/internal/jev"
+	"github.com/mikaelweiss/sift/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/jev"
 )
 
 const maxBodySnippetLen = 2500

@@ -33,7 +33,7 @@ final class AppState {
     }
 
     var bundledServerVersion: String {
-        (Bundle.main.object(forInfoDictionaryKey: "ECleanBundledServerVersion") as? String) ?? "0.1.0"
+        (Bundle.main.object(forInfoDictionaryKey: "SiftBundledServerVersion") as? String) ?? "0.1.0"
     }
 
     var serverUpdateAvailable: Bool {

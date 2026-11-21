@@ -14,7 +14,7 @@ struct PairingApprovalSheet: View {
             Text("Pair New Mac?")
                 .font(.title2.bold())
 
-            Text("\"\(request.deviceName)\" wants to connect to your EClean server. Confirm this code matches the screen on that Mac:")
+            Text("\"\(request.deviceName)\" wants to connect to your Sift server. Confirm this code matches the screen on that Mac:")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: 360)

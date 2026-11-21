@@ -53,7 +53,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Server Update Available (v\(appState.bundledServerVersion))")
                     .font(.headline)
-                Text(appState.isUpdatingServer ? appState.updateProgressMessage : "Update the eclean binary on your server while keeping all SQLite data.")
+                Text(appState.isUpdatingServer ? appState.updateProgressMessage : "Update the sift binary on your server while keeping all SQLite data.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

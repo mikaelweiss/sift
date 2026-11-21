@@ -119,7 +119,7 @@ struct OnboardingView: View {
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Welcome to EClean")
+                Text("Welcome to Sift")
                     .font(.title2.bold())
                 Text(stepSubtitle)
                     .font(.subheadline)
@@ -151,10 +151,10 @@ struct OnboardingView: View {
     private var stepSubtitle: String {
         switch step {
         case .selectHost: return "Choose where your 24/7 spam filter server will run."
-        case .pairExisting: return "EClean is already running on this machine. Pair this Mac to connect."
+        case .pairExisting: return "Sift is already running on this machine. Pair this Mac to connect."
         case .credentials: return "Connect iCloud Mail and your TypeSafe or OpenRouter API key."
         case .categories: return "Choose which spam categories to block and how to handle matches."
-        case .deploy: return "Installing and configuring your EClean server."
+        case .deploy: return "Installing and configuring your Sift server."
         }
     }
 
@@ -288,7 +288,7 @@ struct OnboardingView: View {
 
             GroupBox("Or Enter Code from Server CLI") {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("If no other Mac is paired or online, run `eclean pair` on the server and enter the 6-digit code:")
+                    Text("If no other Mac is paired or online, run `sift pair` on the server and enter the 6-digit code:")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     HStack {
@@ -419,7 +419,7 @@ struct OnboardingView: View {
                 if isDeploying {
                     ProgressView().controlSize(.small)
                 }
-                Text(isDeploying ? "Setting up your EClean server..." : "Setup status")
+                Text(isDeploying ? "Setting up your Sift server..." : "Setup status")
                     .font(.headline)
             }
             VStack(alignment: .leading, spacing: 6) {
@@ -538,7 +538,7 @@ struct OnboardingView: View {
             port: serverPort
         )
 
-        // First probe if an already-paired eclean server is reachable directly over HTTPS.
+        // First probe if an already-paired sift server is reachable directly over HTTPS.
         if let probeURL = URL(string: "https://\(target.host):\(target.port)") {
             let probeClient = APIClient(baseURL: probeURL, token: nil, tlsFingerprint: nil)
             if let health = try? await probeClient.health(), !health.tlsFingerprint.isEmpty, health.pairedDevices > 0 {
@@ -599,7 +599,7 @@ struct OnboardingView: View {
                         return
                     }
                     if st.status == "expired" {
-                        pairStatusText = "Pairing request expired. Use `eclean pair` or go back and retry."
+                        pairStatusText = "Pairing request expired. Use `sift pair` or go back and retry."
                         return
                     }
                 }

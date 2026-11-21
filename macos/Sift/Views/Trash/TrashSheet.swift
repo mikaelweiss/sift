@@ -20,7 +20,7 @@ struct TrashSheet: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Spam in Trash")
                         .font(.title3.bold())
-                    Text("Only mail EClean moved to Trash. Mail you trashed yourself is never shown or deleted here.")
+                    Text("Only mail Sift moved to Trash. Mail you trashed yourself is never shown or deleted here.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

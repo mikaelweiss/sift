@@ -1,4 +1,4 @@
-# EClean Server HTTPS and SSE API Contract
+# Sift Server HTTPS and SSE API Contract
 
 Base URL: `https://<host>:<port>` (default port `8443`, self-signed TLS cert pinned by SHA-256 hex fingerprint).
 
@@ -94,8 +94,8 @@ All `/api/*` endpoints require `Authorization: Bearer <device_token>` except:
 - `GET /api/scans/{id}/matches` -> `{"matches": [ScanMatch]}` (every email the scan marked for trash or delete, highest confidence first)
 
 ### Trash
-- `GET /api/trash` -> `{"mailbox", "uid_validity", "items": [TrashItem]}` (only messages EClean moved to Trash, matched by Message-ID)
-- `POST /api/trash/delete` (body: `{"uid_validity", "uids": [UID]}`) -> `{"deleted": N}` (permanently deletes listed UIDs that EClean trashed, ignores the rest)
+- `GET /api/trash` -> `{"mailbox", "uid_validity", "items": [TrashItem]}` (only messages Sift moved to Trash, matched by Message-ID)
+- `POST /api/trash/delete` (body: `{"uid_validity", "uids": [UID]}`) -> `{"deleted": N}` (permanently deletes listed UIDs that Sift trashed, ignores the rest)
 
 ### Abuse Reporting
 - `GET /api/abuse/queue` -> `{"items": [AbuseQueueItem]}`

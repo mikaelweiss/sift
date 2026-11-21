@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum KeychainStore {
-    private static let service = "com.eclean.app"
+    private static let service = "org.weisssolutions.sift"
     private static let account = "server_connection"
 
     static func save(_ connection: ServerConnection) throws {

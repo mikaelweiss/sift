@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct ECleanApp: App {
+struct SiftApp: App {
     @State private var appState = AppState()
 
     var body: some Scene {

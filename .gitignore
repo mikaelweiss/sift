@@ -1,6 +1,6 @@
 # Build artifacts
-macos/EClean/Resources/Binaries/eclean-*
-macos/EClean.xcodeproj/xcuserdata/
+macos/Sift/Resources/Binaries/sift-*
+macos/Sift.xcodeproj/xcuserdata/
 macos/build/
 .build/
 *.xcarchive

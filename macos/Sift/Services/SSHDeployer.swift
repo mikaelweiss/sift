@@ -40,7 +40,7 @@ enum DeployError: LocalizedError {
 
 enum SSHDeployer {
     static func bundledBinaryURL(os: String, arch: String) -> URL? {
-        let name = "eclean-\(os)-\(arch)"
+        let name = "sift-\(os)-\(arch)"
         if let url = Bundle.main.resourceURL?.appendingPathComponent("Binaries/\(name)"),
            FileManager.default.fileExists(atPath: url.path) {
             return url
@@ -68,7 +68,7 @@ enum SSHDeployer {
             return RemoteHostInfo(os: "darwin", arch: arch, alreadyInstalled: false, existingPort: target.port, existingFingerprint: nil, existingPairedDevices: 0)
         }
 
-        let probeCmd = "uname -s; uname -m; if [ -x \"$HOME/.local/bin/eclean\" ]; then \"$HOME/.local/bin/eclean\" status 2>/dev/null || true; fi"
+        let probeCmd = "uname -s; uname -m; if [ -x \"$HOME/.local/bin/sift\" ]; then \"$HOME/.local/bin/sift\" status 2>/dev/null || true; fi"
         let out = try await runSSH(target: target, command: probeCmd)
         let lines = out.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }
         guard lines.count >= 2 else {
@@ -112,10 +112,10 @@ enum SSHDeployer {
     ) async throws -> DeployResult {
         let arch = currentLocalArch()
         guard let srcURL = bundledBinaryURL(os: "darwin", arch: arch) else {
-            throw DeployError.missingBinary("eclean-darwin-\(arch)")
+            throw DeployError.missingBinary("sift-darwin-\(arch)")
         }
 
-        progress("Installing eclean binary on this Mac...")
+        progress("Installing sift binary on this Mac...")
         let dstPath = localBinaryPath()
         let dstURL = URL(fileURLWithPath: dstPath)
         try FileManager.default.createDirectory(at: dstURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -128,16 +128,16 @@ enum SSHDeployer {
         progress("Configuring launchd background agent...")
         let agentsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/LaunchAgents")
         try FileManager.default.createDirectory(at: agentsDir, withIntermediateDirectories: true)
-        let plistURL = agentsDir.appendingPathComponent("com.eclean.server.plist")
-        let logDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/eclean")
+        let plistURL = agentsDir.appendingPathComponent("org.weisssolutions.sift.server.plist")
+        let logDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/sift")
         try FileManager.default.createDirectory(at: logDir, withIntermediateDirectories: true)
 
         let plistContent = launchAgentPlist(binaryPath: dstPath, port: target.port, logDir: logDir.path)
         try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
 
-        progress("Starting eclean server...")
+        progress("Starting sift server...")
         let uid = String(getuid())
-        _ = try? await runLocal(executable: "/bin/launchctl", args: ["bootout", "gui/\(uid)/com.eclean.server"])
+        _ = try? await runLocal(executable: "/bin/launchctl", args: ["bootout", "gui/\(uid)/org.weisssolutions.sift.server"])
         _ = try await runLocal(executable: "/bin/launchctl", args: ["bootstrap", "gui/\(uid)", plistURL.path])
 
         progress("Waiting for TLS certificate and health...")
@@ -162,25 +162,25 @@ enum SSHDeployer {
         progress("Detecting remote OS and architecture...")
         let info = try await inspectHost(target: target)
         guard let srcURL = bundledBinaryURL(os: info.os, arch: info.arch) else {
-            throw DeployError.missingBinary("eclean-\(info.os)-\(info.arch)")
+            throw DeployError.missingBinary("sift-\(info.os)-\(info.arch)")
         }
 
-        progress("Uploading eclean (\(info.os)/\(info.arch)) over SSH...")
+        progress("Uploading sift (\(info.os)/\(info.arch)) over SSH...")
         _ = try await runSSH(target: target, command: "mkdir -p \"$HOME/.local/bin\"")
-        try await runSCP(target: target, localPath: srcURL.path, remotePath: ".local/bin/eclean.new")
-        _ = try await runSSH(target: target, command: "chmod +x \"$HOME/.local/bin/eclean.new\" && mv -f \"$HOME/.local/bin/eclean.new\" \"$HOME/.local/bin/eclean\"")
+        try await runSCP(target: target, localPath: srcURL.path, remotePath: ".local/bin/sift.new")
+        _ = try await runSSH(target: target, command: "chmod +x \"$HOME/.local/bin/sift.new\" && mv -f \"$HOME/.local/bin/sift.new\" \"$HOME/.local/bin/sift\"")
 
         progress("Configuring background service...")
         if info.os == "linux" {
             let unitCmd = """
             mkdir -p "$HOME/.config/systemd/user"
-            cat > "$HOME/.config/systemd/user/eclean.service" <<'EOF'
+            cat > "$HOME/.config/systemd/user/sift.service" <<'EOF'
             [Unit]
-            Description=EClean Spam Filter Daemon
+            Description=Sift Spam Filter Daemon
             After=network-online.target
 
             [Service]
-            ExecStart=%h/.local/bin/eclean serve --port \(target.port)
+            ExecStart=%h/.local/bin/sift serve --port \(target.port)
             Restart=always
             RestartSec=5
 
@@ -188,25 +188,25 @@ enum SSHDeployer {
             WantedBy=default.target
             EOF
             systemctl --user daemon-reload
-            systemctl --user enable eclean.service
-            systemctl --user restart eclean.service
+            systemctl --user enable sift.service
+            systemctl --user restart sift.service
             loginctl enable-linger "$USER" 2>/dev/null || true
             """
             _ = try await runSSH(target: target, command: unitCmd)
         } else {
             let plistCmd = """
-            xattr -d com.apple.quarantine "$HOME/.local/bin/eclean" 2>/dev/null || true
-            mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/eclean"
-            cat > "$HOME/Library/LaunchAgents/com.eclean.server.plist" <<EOF
-            \(launchAgentPlist(binaryPath: "$HOME/.local/bin/eclean", port: target.port, logDir: "$HOME/Library/Logs/eclean"))
+            xattr -d com.apple.quarantine "$HOME/.local/bin/sift" 2>/dev/null || true
+            mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/sift"
+            cat > "$HOME/Library/LaunchAgents/org.weisssolutions.sift.server.plist" <<EOF
+            \(launchAgentPlist(binaryPath: "$HOME/.local/bin/sift", port: target.port, logDir: "$HOME/Library/Logs/sift"))
             EOF
             UID_NUM="$(id -u)"
-            launchctl bootout "gui/$UID_NUM/com.eclean.server" 2>/dev/null || true
-            launchctl bootout "user/$UID_NUM/com.eclean.server" 2>/dev/null || true
-            if ! launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/com.eclean.server.plist" 2>/dev/null; then
-              if ! launchctl bootstrap "user/$UID_NUM" "$HOME/Library/LaunchAgents/com.eclean.server.plist" 2>/dev/null; then
-                pkill -f "$HOME/.local/bin/eclean serve" 2>/dev/null || true
-                nohup "$HOME/.local/bin/eclean" serve --port \(target.port) >"$HOME/Library/Logs/eclean/stdout.log" 2>"$HOME/Library/Logs/eclean/stderr.log" </dev/null &
+            launchctl bootout "gui/$UID_NUM/org.weisssolutions.sift.server" 2>/dev/null || true
+            launchctl bootout "user/$UID_NUM/org.weisssolutions.sift.server" 2>/dev/null || true
+            if ! launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/org.weisssolutions.sift.server.plist" 2>/dev/null; then
+              if ! launchctl bootstrap "user/$UID_NUM" "$HOME/Library/LaunchAgents/org.weisssolutions.sift.server.plist" 2>/dev/null; then
+                pkill -f "$HOME/.local/bin/sift serve" 2>/dev/null || true
+                nohup "$HOME/.local/bin/sift" serve --port \(target.port) >"$HOME/Library/Logs/sift/stdout.log" 2>"$HOME/Library/Logs/sift/stderr.log" </dev/null &
               fi
             fi
             """
@@ -221,7 +221,7 @@ enum SSHDeployer {
 
         var code: String? = nil
         if !isUpdate && status.pairedDevices == 0 {
-            let pairOut = try await runSSH(target: target, command: "\"$HOME/.local/bin/eclean\" pair")
+            let pairOut = try await runSSH(target: target, command: "\"$HOME/.local/bin/sift\" pair")
             code = extractSixDigitCode(from: pairOut)
         }
         return DeployResult(host: target.host, port: status.port, tlsFingerprint: fp, pairingCode: code)
@@ -241,7 +241,7 @@ enum SSHDeployer {
 
     private static func waitForRemoteStatus(target: DeployTarget) async throws -> ParsedStatus {
         for _ in 0..<15 {
-            if let out = try? await runSSH(target: target, command: "\"$HOME/.local/bin/eclean\" status"),
+            if let out = try? await runSSH(target: target, command: "\"$HOME/.local/bin/sift\" status"),
                let parsed = parseStatusOutput(out),
                let fp = parsed.fingerprint, !fp.isEmpty {
                 return parsed
@@ -338,7 +338,7 @@ enum SSHDeployer {
 
     private static func localBinaryPath() -> String {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/eclean/bin/eclean")
+            .appendingPathComponent("Library/Application Support/sift/bin/sift")
             .path
     }
 
@@ -371,7 +371,7 @@ enum SSHDeployer {
         <plist version="1.0">
         <dict>
             <key>Label</key>
-            <string>com.eclean.server</string>
+            <string>org.weisssolutions.sift.server</string>
             <key>ProgramArguments</key>
             <array>
                 <string>\(binaryPath)</string>

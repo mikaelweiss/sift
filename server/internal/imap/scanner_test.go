@@ -13,9 +13,9 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-imap/v2/imapserver"
 	"github.com/emersion/go-imap/v2/imapserver/imapmemserver"
-	"github.com/mikaelweiss/eclean/server/internal/classifier"
-	"github.com/mikaelweiss/eclean/server/internal/db"
-	"github.com/mikaelweiss/eclean/server/internal/jev"
+	"github.com/mikaelweiss/sift/server/internal/classifier"
+	"github.com/mikaelweiss/sift/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/jev"
 )
 
 const jevLatency = 50 * time.Millisecond
@@ -233,7 +233,7 @@ func TestScanLiveMovesSpamToTrash(t *testing.T) {
 	}
 }
 
-func TestTrashListsAndDeletesOnlyEcleanMail(t *testing.T) {
+func TestTrashListsAndDeletesOnlySiftMail(t *testing.T) {
 	const messages = 400
 	run := runScan(t, messages, false)
 	spam := messages / 4
@@ -260,7 +260,7 @@ func TestTrashListsAndDeletesOnlyEcleanMail(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(listing.Items) != spam {
-		t.Fatalf("listed %d trash items, want the %d EClean trashed", len(listing.Items), spam)
+		t.Fatalf("listed %d trash items, want the %d Sift trashed", len(listing.Items), spam)
 	}
 
 	var uids []uint32

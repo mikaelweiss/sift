@@ -67,8 +67,8 @@ func LoadOrGenerateTLS(dataDir string) (tls.Certificate, string, error) {
 	tmpl := x509.Certificate{
 		SerialNumber: serial,
 		Subject: pkix.Name{
-			CommonName:   "eclean-server",
-			Organization: []string{"EClean"},
+			CommonName:   "sift-server",
+			Organization: []string{"Sift"},
 		},
 		NotBefore:             time.Now().UTC().Add(-time.Hour),
 		NotAfter:              time.Now().UTC().Add(390 * 24 * time.Hour),

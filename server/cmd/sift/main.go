@@ -20,15 +20,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mikaelweiss/eclean/server/internal/abuse"
-	"github.com/mikaelweiss/eclean/server/internal/api"
-	"github.com/mikaelweiss/eclean/server/internal/classifier"
-	"github.com/mikaelweiss/eclean/server/internal/config"
-	"github.com/mikaelweiss/eclean/server/internal/db"
-	"github.com/mikaelweiss/eclean/server/internal/imap"
+	"github.com/mikaelweiss/sift/server/internal/abuse"
+	"github.com/mikaelweiss/sift/server/internal/api"
+	"github.com/mikaelweiss/sift/server/internal/classifier"
+	"github.com/mikaelweiss/sift/server/internal/config"
+	"github.com/mikaelweiss/sift/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/imap"
 )
 
-var Version = "0.1.9"
+var Version = "0.1.10"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -38,7 +38,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "version":
-		fmt.Printf("eclean %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("sift %s (%s/%s)\n", Version, runtime.GOOS, runtime.GOARCH)
 	case "status":
 		runStatus(os.Args[2:])
 	case "pair":
@@ -52,7 +52,7 @@ func main() {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: eclean <serve|pair|status|version> [flags]")
+	fmt.Fprintln(os.Stderr, "Usage: sift <serve|pair|status|version> [flags]")
 }
 
 func resolveDataDir(flagDir string) string {
@@ -189,7 +189,7 @@ func runServe(args []string) {
 		_ = httpServer.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("eclean %s listening on https://0.0.0.0:%d (TLS SHA-256: %s)", Version, *port, fingerprint)
+	log.Printf("sift %s listening on https://0.0.0.0:%d (TLS SHA-256: %s)", Version, *port, fingerprint)
 	if err := httpServer.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("https server error: %v", err)
 	}
