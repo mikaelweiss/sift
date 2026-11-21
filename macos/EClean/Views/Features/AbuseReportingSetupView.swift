@@ -72,7 +72,7 @@ struct AbuseReportingSetupView: View {
                         }
                         .pickerStyle(.segmented)
 
-                        TextField("From Email / Alias (e.g. abuse-alias@icloud.com)", text: $draft.abuseFromEmail)
+                        TextField("From Email / Alias", text: $draft.abuseFromEmail, prompt: Text(verbatim: "From Email / Alias (e.g. abuse-alias@icloud.com)"))
                             .textFieldStyle(.roundedBorder)
 
                         if draft.abuseSMTPMode == "custom" {

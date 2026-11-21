@@ -150,7 +150,7 @@ struct SettingsSheet: View {
                 .foregroundStyle(.secondary)
 
             HStack {
-                TextField("Email address or domain (e.g. bank.com or mom@icloud.com)", text: $newAllowlistPattern)
+                TextField("Allowlist entry", text: $newAllowlistPattern, prompt: Text(verbatim: "Email address or domain (e.g. bank.com or mom@icloud.com)"))
                     .textFieldStyle(.roundedBorder)
                 Button("Add") {
                     Task { await addAllowlist() }

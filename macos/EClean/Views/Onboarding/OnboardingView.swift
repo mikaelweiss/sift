@@ -224,7 +224,7 @@ struct OnboardingView: View {
             }
 
             if useManualHost {
-                TextField("Hostname or IP (e.g. home-server.ts.net or 192.168.1.50)", text: $manualHost)
+                TextField("Hostname or IP", text: $manualHost, prompt: Text(verbatim: "Hostname or IP (e.g. home-server.ts.net or 192.168.1.50)"))
                     .textFieldStyle(.roundedBorder)
             }
 
@@ -316,7 +316,7 @@ struct OnboardingView: View {
                         .foregroundStyle(.secondary)
                     Link("Open account.apple.com", destination: URL(string: "https://account.apple.com")!)
                         .font(.caption)
-                    TextField("iCloud Email (e.g. you@icloud.com)", text: $icloudEmail)
+                    TextField("iCloud Email", text: $icloudEmail, prompt: Text(verbatim: "iCloud Email (e.g. you@icloud.com)"))
                         .textFieldStyle(.roundedBorder)
                     SecureField("App-Specific Password (xxxx-xxxx-xxxx-xxxx)", text: $icloudAppPassword)
                         .textFieldStyle(.roundedBorder)
