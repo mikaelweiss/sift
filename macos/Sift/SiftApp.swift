@@ -1,8 +1,14 @@
+import Sparkle
 import SwiftUI
 
 @main
 struct SiftApp: App {
     @State private var appState = AppState()
+    private let updaterController = SPUStandardUpdaterController(
+        startingUpdater: true,
+        updaterDelegate: nil,
+        userDriverDelegate: nil
+    )
 
     var body: some Scene {
         WindowGroup {
@@ -25,6 +31,9 @@ struct SiftApp: App {
         }
         .defaultSize(width: 920, height: 640)
         .commands {
+            CommandGroup(after: .appInfo) {
+                CheckForUpdatesView(updater: updaterController.updater)
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings...") {
                     appState.showSettings = true

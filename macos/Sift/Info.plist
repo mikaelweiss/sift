@@ -34,6 +34,10 @@
 		<true/>
 	</dict>
 	<key>SiftBundledServerVersion</key>
-	<string>0.1.13</string>
+	<string>$(MARKETING_VERSION)</string>
+	<key>SUFeedURL</key>
+	<string>https://sift.weisssolutions.org/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>Yo3piRKjLXy3uS5BmbQX9HzpaZ00Zeq/ptPbazmn+Dk=</string>
 </dict>
 </plist>

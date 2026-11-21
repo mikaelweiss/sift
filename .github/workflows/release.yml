@@ -1,0 +1,213 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: Sift
+  PROJECT: macos/Sift.xcodeproj
+  SCHEME: Sift
+
+jobs:
+  build:
+    runs-on: macos-26
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      build: ${{ steps.info.outputs.build }}
+      minimum_os: ${{ steps.info.outputs.minimum_os }}
+      signature: ${{ steps.sparkle.outputs.signature }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check tag matches project version
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          PROJECT_VERSION=$(awk '/MARKETING_VERSION:/ {gsub(/"/, "", $2); print $2}' macos/project.yml)
+          if [ "$VERSION" != "$PROJECT_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match MARKETING_VERSION $PROJECT_VERSION in macos/project.yml"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Test server
+        working-directory: server
+        run: go test ./...
+
+      - name: Build server binaries
+        run: SIFT_VERSION="$VERSION" ./scripts/build-server.sh
+
+      - name: Import certificate
+        env:
+          P12_BASE64: ${{ secrets.DEVELOPER_ID_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.DEVELOPER_ID_CERTIFICATE_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH=$RUNNER_TEMP/certificate.p12
+          KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain-db
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 32)
+
+          echo -n "$P12_BASE64" | base64 --decode -o $CERTIFICATE_PATH
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security set-keychain-settings -lut 21600 $KEYCHAIN_PATH
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security import $CERTIFICATE_PATH -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k $KEYCHAIN_PATH
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" $KEYCHAIN_PATH
+          security list-keychains -d user > $RUNNER_TEMP/keychains-before.txt
+          security list-keychains -d user -s $KEYCHAIN_PATH login.keychain-db
+
+      # Notarization rejects any unsigned Mach-O in the bundle, and Xcode
+      # does not sign executables copied in as resources.
+      - name: Sign bundled macOS server binaries
+        run: |
+          for binary in macos/Sift/Resources/Binaries/sift-darwin-*; do
+            codesign --force --options runtime --timestamp \
+              --identifier org.weisssolutions.sift.server \
+              --sign "Developer ID Application" "$binary"
+          done
+
+      - name: Install App Store Connect API key
+        env:
+          API_KEY_BASE64: ${{ secrets.APP_STORE_CONNECT_KEY_P8 }}
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+        run: |
+          echo -n "$API_KEY_BASE64" | base64 --decode -o $RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8
+
+      - name: Resolve packages
+        run: |
+          xcodebuild -resolvePackageDependencies \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData"
+
+      - name: Build and archive
+        run: |
+          xcodebuild clean archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            -archivePath "$RUNNER_TEMP/Sift.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM=976SMHMA6R
+
+      - name: Export archive
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/Sift.xcarchive" \
+            -exportOptionsPlist macos/ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export"
+
+      # dmgbuild writes the window layout itself. create-dmg scripts Finder,
+      # which a headless runner has no permission to control.
+      - name: Create DMG
+        run: |
+          /usr/bin/python3 -m venv "$RUNNER_TEMP/dmgbuild"
+          "$RUNNER_TEMP/dmgbuild/bin/pip" install --quiet dmgbuild==1.6.5
+          "$RUNNER_TEMP/dmgbuild/bin/dmgbuild" \
+            -s scripts/dmg-settings.py \
+            -D app="$RUNNER_TEMP/export/$APP_NAME.app" \
+            "$APP_NAME" \
+            "$RUNNER_TEMP/Sift.dmg"
+
+      - name: Notarize DMG
+        env:
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          API_KEY_ISSUER: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+        run: |
+          SUBMIT_OUT=$(xcrun notarytool submit "$RUNNER_TEMP/Sift.dmg" \
+            --key "$RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8" \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_KEY_ISSUER" \
+            --wait 2>&1) || true
+          echo "$SUBMIT_OUT"
+
+          SUBMISSION_ID=$(echo "$SUBMIT_OUT" | grep "id:" | head -1 | awk '{print $2}')
+
+          if ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
+            echo "--- Notarization failed. Fetching log ---"
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --key "$RUNNER_TEMP/AuthKey_${API_KEY_ID}.p8" \
+              --key-id "$API_KEY_ID" \
+              --issuer "$API_KEY_ISSUER"
+            exit 1
+          fi
+
+          xcrun stapler staple "$RUNNER_TEMP/Sift.dmg"
+
+      - name: Download Sparkle tools
+        run: |
+          curl -L "https://github.com/sparkle-project/Sparkle/releases/download/2.9.1/Sparkle-2.9.1.tar.xz" \
+            -o "$RUNNER_TEMP/sparkle.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar xf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+
+      - name: Sign update with EdDSA
+        id: sparkle
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          SIGNATURE=$(echo -n "$SPARKLE_PRIVATE_KEY" | "$RUNNER_TEMP/sparkle/bin/sign_update" "$RUNNER_TEMP/Sift.dmg" --ed-key-file -)
+          echo "signature=$SIGNATURE" >> $GITHUB_OUTPUT
+
+      - name: Extract version info
+        id: info
+        run: |
+          PLIST="$RUNNER_TEMP/export/$APP_NAME.app/Contents/Info.plist"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build=$(/usr/libexec/PlistBuddy -c 'Print CFBundleVersion' "$PLIST")" >> $GITHUB_OUTPUT
+          echo "minimum_os=$(/usr/libexec/PlistBuddy -c 'Print LSMinimumSystemVersion' "$PLIST")" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          BINARIES=macos/Sift/Resources/Binaries
+          (cd "$BINARIES" && shasum -a 256 sift-* > "$RUNNER_TEMP/SHA256SUMS")
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/Sift.dmg#Sift.dmg" \
+            "$BINARIES"/sift-* \
+            "$RUNNER_TEMP/SHA256SUMS" \
+            --title "Sift ${VERSION}" \
+            --generate-notes \
+            --verify-tag \
+            --latest
+
+      - name: Clean up signing material
+        if: always()
+        run: |
+          if [ -f $RUNNER_TEMP/keychains-before.txt ]; then
+            xargs security list-keychains -d user -s < $RUNNER_TEMP/keychains-before.txt
+          fi
+          security delete-keychain $RUNNER_TEMP/build.keychain-db 2>/dev/null || true
+
+  appcast:
+    needs: build
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Publish appcast
+        env:
+          APPCAST_VERSION: ${{ needs.build.outputs.version }}
+          APPCAST_BUILD: ${{ needs.build.outputs.build }}
+          APPCAST_MINIMUM_OS: ${{ needs.build.outputs.minimum_os }}
+          APPCAST_SIGNATURE: ${{ needs.build.outputs.signature }}
+          APPCAST_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Sift.dmg
+        run: ./scripts/publish-site.sh "Update appcast for ${GITHUB_REF_NAME}"
