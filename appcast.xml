@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>Sift Updates</title>
+    <link>https://sift.weisssolutions.org/</link>
+    <description>Sift update feed.</description>
+    <language>en</language>
+    <item>
+      <title>Version 0.1.14</title>
+      <pubDate>Sat, 21 Nov 2026 06:07:03 +0000</pubDate>
+      <sparkle:version>15</sparkle:version>
+      <sparkle:shortVersionString>0.1.14</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/mikaelweiss/sift/releases/tag/v0.1.14</sparkle:releaseNotesLink>
+      <enclosure
+        url="https://github.com/mikaelweiss/sift/releases/download/v0.1.14/Sift.dmg"
+        sparkle:edSignature="MV3IQPbUrYoUPSOfWz49qhTu7btCLe2gcpLGn4fRmYyTkwK3vTI4KhM9DZOjcrGqOKyQ7nhASiWRN31m3jG4BQ==" length="23819564"
+        type="application/octet-stream"/>
+    </item>
+  </channel>
+</rss>
