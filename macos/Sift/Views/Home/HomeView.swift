@@ -9,6 +9,7 @@ struct HomeView: View {
         ("7D", 7),
         ("30D", 30),
         ("90D", 90),
+        ("1Y", 365),
         ("All", 0),
     ]
 
@@ -97,7 +98,7 @@ struct HomeView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 210)
+                .frame(width: 260)
             }
 
             if appState.stats.isEmpty {
@@ -111,15 +112,7 @@ struct HomeView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 220)
             } else {
-                Chart(appState.stats) { item in
-                    BarMark(
-                        x: .value("Day", item.parsedDate, unit: .day),
-                        y: .value("Blocked", item.count)
-                    )
-                    .foregroundStyle(by: .value("Category", item.categoryName))
-                }
-                .chartLegend(position: .bottom)
-                .frame(height: 240)
+                SpamChart(stats: appState.stats, categories: appState.categories, rangeDays: appState.selectedStatsDays)
             }
         }
         .padding(20)
@@ -129,7 +122,11 @@ struct HomeView: View {
     private var timeframeSubtitle: String {
         let mode = appState.settings.deleteEnabled ? "Junk + permanent delete" : "Move to Junk"
         let activeCount = appState.categories.filter(\.enabled).count
-        let range = selectedDays == 0 ? "All time" : "Last \(selectedDays) days"
+        let range = switch selectedDays {
+        case 0: "All time"
+        case 365: "Last year"
+        default: "Last \(selectedDays) days"
+        }
         return "\(range) · \(activeCount) active categories · \(mode)"
     }
 }
