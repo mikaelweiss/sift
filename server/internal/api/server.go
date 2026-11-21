@@ -49,7 +49,7 @@ func NewServer(store *db.Store, watcher *imap.Watcher, scanner *imap.Scanner, ab
 	if hub == nil {
 		hub = NewHub()
 	}
-	return &Server{
+	srv := &Server{
 		store:          store,
 		watcher:        watcher,
 		scanner:        scanner,
@@ -59,6 +59,13 @@ func NewServer(store *db.Store, watcher *imap.Watcher, scanner *imap.Scanner, ab
 		tlsFingerprint: tlsFingerprint,
 		pairRequests:   make(map[string]*pairRequest),
 	}
+	hub.OnSubscribe = func() []sseMessage {
+		if msg, ok := NewSSEMessage("health", srv.BuildHealthPayload()); ok {
+			return []sseMessage{msg}
+		}
+		return nil
+	}
+	return srv
 }
 
 func (s *Server) Handler() http.Handler {

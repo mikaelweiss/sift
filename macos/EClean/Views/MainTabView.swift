@@ -13,15 +13,30 @@ struct MainTabView: View {
                 .navigationTitle("EClean")
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(statusColor)
-                                .frame(width: 7, height: 7)
-                            Text(statusText)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                        Button {
+                            Task { await appState.reconnect() }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if appState.isReconnecting {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Circle()
+                                        .fill(statusColor)
+                                        .frame(width: 7, height: 7)
+                                }
+                                Text(statusText)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                if !appState.isConnected || appState.health?.imapConnected != true {
+                                    Image(systemName: "arrow.clockwise")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.horizontal, 8)
                         }
-                        .padding(.horizontal, 8)
+                        .buttonStyle(.plain)
+                        .help(statusTooltip)
                     }
 
                     ToolbarItemGroup(placement: .primaryAction) {
@@ -72,11 +87,21 @@ struct MainTabView: View {
     }
 
     private var statusText: String {
-        guard appState.isConnected else { return "Offline" }
+        guard appState.isConnected else { return "Offline · Reconnect" }
         let host = appState.connection?.host.components(separatedBy: ".").first ?? "Server"
         if appState.health?.imapConnected == true {
             return "\(host) · Active"
         }
-        return "\(host) · IMAP Disconnected"
+        return "\(host) · IMAP Reconnecting"
+    }
+
+    private var statusTooltip: String {
+        if !appState.isConnected {
+            return "Server offline. Click to reconnect."
+        }
+        if let err = appState.health?.imapError, !err.isEmpty {
+            return "IMAP status: \(err). Click to refresh."
+        }
+        return "Connected. Click to refresh."
     }
 }

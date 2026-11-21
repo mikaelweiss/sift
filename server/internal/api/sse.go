@@ -14,12 +14,21 @@ type sseMessage struct {
 }
 
 type Hub struct {
-	mu      sync.RWMutex
-	clients map[chan sseMessage]struct{}
+	mu          sync.RWMutex
+	clients     map[chan sseMessage]struct{}
+	OnSubscribe func() []sseMessage
 }
 
 func NewHub() *Hub {
 	return &Hub{clients: make(map[chan sseMessage]struct{})}
+}
+
+func NewSSEMessage(event string, payload any) (sseMessage, bool) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return sseMessage{}, false
+	}
+	return sseMessage{Event: event, Data: raw}, true
 }
 
 func (h *Hub) Publish(event string, payload any) {
@@ -49,6 +58,12 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
+
+	if h.OnSubscribe != nil {
+		for _, msg := range h.OnSubscribe() {
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", msg.Event, string(msg.Data))
+		}
+	}
 	flusher.Flush()
 
 	ch := make(chan sseMessage, 32)

@@ -18,12 +18,14 @@ final class AppState {
     var incomingPairRequest: IncomingPairRequest?
 
     var isConnected: Bool = false
+    var isReconnecting: Bool = false
     var isUpdatingServer: Bool = false
     var updateProgressMessage: String = ""
     var errorMessage: String?
     var showSettings: Bool = false
 
     private let sseClient = SSEClient()
+    private var healthMonitorTask: Task<Void, Never>?
 
     var apiClient: APIClient? {
         guard let connection else { return nil }
@@ -138,14 +140,57 @@ final class AppState {
             },
             onConnectionChanged: { [weak self] connected in
                 Task { @MainActor [weak self] in
-                    self?.isConnected = connected
+                    guard let self else { return }
+                    let wasConnected = self.isConnected
+                    self.isConnected = connected
+                    if connected && !wasConnected {
+                        await self.refreshAll()
+                    }
                 }
             }
         )
+        startHealthMonitor()
     }
 
     func stopSSE() {
         sseClient.stop()
+        healthMonitorTask?.cancel()
+        healthMonitorTask = nil
+    }
+
+    func reconnect() async {
+        guard connection != nil else { return }
+        isReconnecting = true
+        defer { isReconnecting = false }
+        startSSE()
+        await refreshAll()
+    }
+
+    private func startHealthMonitor() {
+        healthMonitorTask?.cancel()
+        healthMonitorTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self, !Task.isCancelled, self.connection != nil else { break }
+                if !self.isConnected || self.health?.imapConnected != true {
+                    await self.refreshHealthOnly()
+                }
+            }
+        }
+    }
+
+    private func refreshHealthOnly() async {
+        guard let client = apiClient else { return }
+        if let h = try? await client.health() {
+            let wasOffline = !isConnected
+            health = h
+            isConnected = true
+            errorMessage = nil
+            if wasOffline {
+                startSSE()
+                await refreshAll()
+            }
+        }
     }
 
     func approveIncomingPair(approve: Bool) async {
@@ -180,7 +225,9 @@ final class AppState {
                     self.updateProgressMessage = msg
                 }
             }
-            await refreshAll()
+            // Wait briefly for the restarted daemon to finish its IMAP login before refreshing and reconnecting SSE.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            await reconnect()
         } catch {
             errorMessage = error.localizedDescription
         }
