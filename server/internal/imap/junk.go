@@ -10,7 +10,7 @@ import (
 	"github.com/mikaelweiss/sift/server/internal/db"
 )
 
-type TrashItem struct {
+type JunkItem struct {
 	UID        uint32  `json:"uid"`
 	Sender     string  `json:"sender"`
 	Subject    string  `json:"subject"`
@@ -19,28 +19,28 @@ type TrashItem struct {
 	Confidence float64 `json:"confidence"`
 }
 
-type TrashListing struct {
-	Mailbox     string      `json:"mailbox"`
-	UIDValidity uint32      `json:"uid_validity"`
-	Items       []TrashItem `json:"items"`
+type JunkListing struct {
+	Mailbox     string     `json:"mailbox"`
+	UIDValidity uint32     `json:"uid_validity"`
+	Items       []JunkItem `json:"items"`
 }
 
-// trashSession holds the Trash mailbox selected, paired with the Message-IDs Sift trashed.
-// Matching by Message-ID keeps mail the user trashed themselves out of reach.
-type trashSession struct {
+// junkSession holds the Junk mailbox selected, paired with the Message-IDs Sift moved there.
+// Matching by Message-ID keeps mail that landed in Junk some other way out of reach.
+type junkSession struct {
 	c           *imapclient.Client
 	mailbox     string
 	uidValidity uint32
 	numMessages uint32
-	trashed     map[string]db.EmailEvent
+	junked      map[string]db.EmailEvent
 }
 
-func openTrash(store *db.Store, readOnly bool) (*trashSession, error) {
+func openJunk(store *db.Store, readOnly bool) (*junkSession, error) {
 	cfg, err := store.GetSettings()
 	if err != nil {
 		return nil, err
 	}
-	trashed, err := store.ListTrashedEvents()
+	junked, err := store.ListJunkedEvents()
 	if err != nil {
 		return nil, err
 	}
@@ -48,22 +48,22 @@ func openTrash(store *db.Store, readOnly bool) (*trashSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	mailbox := discoverTrashMailbox(c)
+	mailbox := discoverSpamMailboxes(c).junk
 	data, err := c.Select(mailbox, &goimap.SelectOptions{ReadOnly: readOnly}).Wait()
 	if err != nil {
 		_ = c.Close()
 		return nil, fmt.Errorf("select %s: %w", mailbox, err)
 	}
-	return &trashSession{c: c, mailbox: mailbox, uidValidity: data.UIDValidity, numMessages: data.NumMessages, trashed: trashed}, nil
+	return &junkSession{c: c, mailbox: mailbox, uidValidity: data.UIDValidity, numMessages: data.NumMessages, junked: junked}, nil
 }
 
-func (t *trashSession) close() {
+func (t *junkSession) close() {
 	_ = t.c.Logout().Wait()
 	_ = t.c.Close()
 }
 
-// siftMessages returns the messages in fetchSet that Sift trashed, keyed by UID.
-func (t *trashSession) siftMessages(fetchSet goimap.NumSet) (map[uint32]db.EmailEvent, error) {
+// siftMessages returns the messages in fetchSet that Sift moved to Junk, keyed by UID.
+func (t *junkSession) siftMessages(fetchSet goimap.NumSet) (map[uint32]db.EmailEvent, error) {
 	msgs, err := t.c.Fetch(fetchSet, &goimap.FetchOptions{UID: true, Envelope: true}).Collect()
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", t.mailbox, err)
@@ -73,32 +73,32 @@ func (t *trashSession) siftMessages(fetchSet goimap.NumSet) (map[uint32]db.Email
 		if m.Envelope == nil {
 			continue
 		}
-		if ev, ok := t.trashed[db.NormalizeMessageID(m.Envelope.MessageID)]; ok {
+		if ev, ok := t.junked[db.NormalizeMessageID(m.Envelope.MessageID)]; ok {
 			out[uint32(m.UID)] = ev
 		}
 	}
 	return out, nil
 }
 
-func ListTrash(store *db.Store) (TrashListing, error) {
-	t, err := openTrash(store, true)
+func ListJunk(store *db.Store) (JunkListing, error) {
+	t, err := openJunk(store, true)
 	if err != nil {
-		return TrashListing{}, err
+		return JunkListing{}, err
 	}
 	defer t.close()
 
-	listing := TrashListing{Mailbox: t.mailbox, UIDValidity: t.uidValidity, Items: []TrashItem{}}
-	if t.numMessages == 0 || len(t.trashed) == 0 {
+	listing := JunkListing{Mailbox: t.mailbox, UIDValidity: t.uidValidity, Items: []JunkItem{}}
+	if t.numMessages == 0 || len(t.junked) == 0 {
 		return listing, nil
 	}
 	var all goimap.SeqSet
 	all.AddRange(1, 0)
 	found, err := t.siftMessages(all)
 	if err != nil {
-		return TrashListing{}, err
+		return JunkListing{}, err
 	}
 	for uid, ev := range found {
-		listing.Items = append(listing.Items, TrashItem{
+		listing.Items = append(listing.Items, JunkItem{
 			UID:        uid,
 			Sender:     ev.Sender,
 			Subject:    ev.Subject,
@@ -117,18 +117,18 @@ func ListTrash(store *db.Store) (TrashListing, error) {
 	return listing, nil
 }
 
-// DeleteFromTrash permanently removes the given Trash UIDs that Sift put there and returns how many it removed.
-func DeleteFromTrash(store *db.Store, uidValidity uint32, uids []uint32) (int, error) {
+// DeleteFromJunk permanently removes the given Junk UIDs that Sift put there and returns how many it removed.
+func DeleteFromJunk(store *db.Store, uidValidity uint32, uids []uint32) (int, error) {
 	if len(uids) == 0 {
 		return 0, nil
 	}
-	t, err := openTrash(store, false)
+	t, err := openJunk(store, false)
 	if err != nil {
 		return 0, err
 	}
 	defer t.close()
 	if t.uidValidity != uidValidity {
-		return 0, errors.New("the Trash mailbox changed since it was listed, reload and try again")
+		return 0, errors.New("the Junk mailbox changed since it was listed, reload and try again")
 	}
 
 	var requested goimap.UIDSet
@@ -149,14 +149,10 @@ func DeleteFromTrash(store *db.Store, uidValidity uint32, uids []uint32) (int, e
 		target.AddNum(goimap.UID(uid))
 		messageIDs = append(messageIDs, ev.MessageID)
 	}
-	if err := t.c.Store(target, &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Silent: true, Flags: []goimap.Flag{goimap.FlagDeleted}}, nil).Close(); err != nil {
-		return 0, fmt.Errorf("mark deleted: %w", err)
+	if err := expungeUIDs(t.c, target); err != nil {
+		return 0, err
 	}
-	// A plain EXPUNGE would also remove anything else flagged \Deleted, so there is no fallback.
-	if err := t.c.UIDExpunge(target).Close(); err != nil {
-		return 0, fmt.Errorf("expunge: %w", err)
-	}
-	if err := store.MarkTrashedEventsDeleted(messageIDs); err != nil {
+	if err := store.MarkJunkedEventsDeleted(messageIDs); err != nil {
 		return 0, err
 	}
 	return len(found), nil

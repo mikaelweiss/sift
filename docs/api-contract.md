@@ -91,17 +91,21 @@ All `/api/*` endpoints require `Authorization: Bearer <device_token>` except:
 - `POST /api/scans/{id}/resume` -> `{"job": ScanJob}`
 - `POST /api/scans/{id}/cancel` -> `{"job": ScanJob}`
 - `POST /api/scans/{id}/apply` -> `{"job": ScanJob}` (applies a completed Dry Run without re-running Jev)
-- `GET /api/scans/{id}/matches` -> `{"matches": [ScanMatch]}` (every email the scan marked for trash or delete, highest confidence first)
+- `GET /api/scans/{id}/matches` -> `{"matches": [ScanMatch]}` (every email the scan marked for Junk or delete, highest confidence first)
 
-### Trash
-- `GET /api/trash` -> `{"mailbox", "uid_validity", "items": [TrashItem]}` (only messages Sift moved to Trash, matched by Message-ID)
-- `POST /api/trash/delete` (body: `{"uid_validity", "uids": [UID]}`) -> `{"deleted": N}` (permanently deletes listed UIDs that Sift trashed, ignores the rest)
+### Junk
+- `GET /api/junk` -> `{"mailbox", "uid_validity", "items": [JunkItem]}` (only messages Sift moved to Junk, matched by Message-ID)
+- `POST /api/junk/delete` (body: `{"uid_validity", "uids": [UID]}`) -> `{"deleted": N}` (permanently deletes listed UIDs that Sift moved to Junk, ignores the rest)
+
+### Mailing Lists
+- `GET /api/mailing-lists` -> `{"lists": [MailingList]}` (senders that pass DMARC on every message, offer RFC 8058 one-click unsubscribe, were never flagged as abuse-eligible spam, and have mailed for at least 30 days)
+- `POST /api/mailing-lists/unsubscribe` (body: `{"sender"}`) -> `MailingList` with `unsubscribed_at` or `error` set
 
 ### Abuse Reporting
-- `GET /api/abuse/queue` -> `{"items": [AbuseQueueItem]}`
-- `POST /api/abuse/{id}/approve` -> `{"status": "sent|failed", "error": ""}`
+- `GET /api/abuse/queue` -> `{"items": [AbuseQueueItem]}` (`status` is `pending` or `sending`)
+- `POST /api/abuse/{id}/approve` -> `202 Accepted` (`{"status": "sending"}`); delivery runs in the background and lands in history
 - `POST /api/abuse/{id}/dismiss` -> `204 No Content`
-- `POST /api/abuse/test-smtp` (body: `{"to_email": "..."}`) -> `{"ok": true, "error": ""}`
+- `GET /api/abuse/history` -> `{"entries": [AbuseHistoryEntry]}` (latest 50, each with per-recipient `deliveries` and `status` of `sent`, `partial` or `failed`)
 
 ### Live Event Stream (SSE)
 - `GET /api/events` (`text/event-stream`, authenticated via `Authorization: Bearer <token>`)

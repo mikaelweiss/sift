@@ -44,22 +44,15 @@ struct AppSettings: Codable, Equatable, Sendable {
     var aiAPIKey: String?
     var aiModel: String = "jev-latest"
     var deleteEnabled: Bool = false
-    var trashThreshold: Double = 0.85
+    var junkThreshold: Double = 0.85
     var deleteThreshold: Double = 0.95
     var abuseEnabled: Bool = true
     var abuseManualApproval: Bool = true
     var abuseMinConfidence: Double = 0.95
     var abuseCooldownDays: Int = 7
-    var abuseSMTPMode: String = "icloud_alias"
-    var abuseFromEmail: String = ""
-    var abuseSMTPHost: String = "smtp.mail.me.com"
-    var abuseSMTPPort: Int = 587
-    var abuseSMTPUsername: String = ""
-    var abuseSMTPPassword: String?
 
     var hasIMAPPassword: Bool?
     var hasAIAPIKey: Bool?
-    var hasAbuseSMTPPassword: Bool?
 
     enum CodingKeys: String, CodingKey {
         case imapHost = "imap_host"
@@ -70,21 +63,14 @@ struct AppSettings: Codable, Equatable, Sendable {
         case aiAPIKey = "ai_api_key"
         case aiModel = "ai_model"
         case deleteEnabled = "delete_enabled"
-        case trashThreshold = "trash_threshold"
+        case junkThreshold = "junk_threshold"
         case deleteThreshold = "delete_threshold"
         case abuseEnabled = "abuse_enabled"
         case abuseManualApproval = "abuse_manual_approval"
         case abuseMinConfidence = "abuse_min_confidence"
         case abuseCooldownDays = "abuse_cooldown_days"
-        case abuseSMTPMode = "abuse_smtp_mode"
-        case abuseFromEmail = "abuse_from_email"
-        case abuseSMTPHost = "abuse_smtp_host"
-        case abuseSMTPPort = "abuse_smtp_port"
-        case abuseSMTPUsername = "abuse_smtp_username"
-        case abuseSMTPPassword = "abuse_smtp_password"
         case hasIMAPPassword = "has_imap_password"
         case hasAIAPIKey = "has_ai_api_key"
-        case hasAbuseSMTPPassword = "has_abuse_smtp_password"
     }
 }
 
@@ -112,10 +98,11 @@ struct AllowlistEntry: Codable, Identifiable, Equatable, Sendable {
     var id: Int64
     var pattern: String
     var kind: String
+    var builtin: Bool
     var createdAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, pattern, kind
+        case id, pattern, kind, builtin
         case createdAt = "created_at"
     }
 }
@@ -223,7 +210,7 @@ struct ScanMatchesResponse: Codable, Sendable {
     var matches: [ScanMatch]
 }
 
-struct TrashItem: Codable, Identifiable, Sendable {
+struct JunkItem: Codable, Identifiable, Sendable {
     var uid: UInt32
     var sender: String
     var subject: String
@@ -240,10 +227,10 @@ struct TrashItem: Codable, Identifiable, Sendable {
     }
 }
 
-struct TrashListing: Codable, Sendable {
+struct JunkListing: Codable, Sendable {
     var mailbox: String
     var uidValidity: UInt32
-    var items: [TrashItem]
+    var items: [JunkItem]
 
     enum CodingKeys: String, CodingKey {
         case mailbox, items
@@ -251,8 +238,14 @@ struct TrashListing: Codable, Sendable {
     }
 }
 
-struct TrashDeleteResponse: Codable, Sendable {
+struct JunkDeleteResponse: Codable, Sendable {
     var deleted: Int
+}
+
+struct AbuseTarget: Codable, Equatable, Sendable {
+    var address: String
+    var kind: String
+    var reason: String
 }
 
 struct AbuseQueueItem: Codable, Identifiable, Equatable, Sendable {
@@ -262,17 +255,20 @@ struct AbuseQueueItem: Codable, Identifiable, Equatable, Sendable {
     var categoryID: String
     var confidence: Double
     var hitCount: Int
-    var targets: [String]
+    var targets: [AbuseTarget]
     var redactedHeaders: String
     var subject: String
     var sender: String
     var repeatOffense: Bool
     var previousReportedAt: String?
+    var status: String
     var createdAt: String
     var updatedAt: String
 
+    var isSending: Bool { status == "sending" }
+
     enum CodingKeys: String, CodingKey {
-        case id, confidence, targets, subject, sender
+        case id, confidence, targets, subject, sender, status
         case rootDomain = "root_domain"
         case sendingIP = "sending_ip"
         case categoryID = "category_id"
@@ -289,9 +285,61 @@ struct AbuseQueueResponse: Codable, Sendable {
     var items: [AbuseQueueItem]
 }
 
-struct AbuseApproveResponse: Codable, Sendable {
+struct AbuseDelivery: Codable, Equatable, Sendable {
+    var address: String
+    var kind: String
+    var reason: String
+    var ok: Bool
+    var error: String?
+}
+
+struct AbuseHistoryEntry: Codable, Identifiable, Sendable {
+    var id: Int64
+    var rootDomain: String
+    var categoryID: String
+    var subject: String
+    var sender: String
+    var deliveries: [AbuseDelivery]
     var status: String
-    var error: String
+    var reportedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, subject, sender, deliveries, status
+        case rootDomain = "root_domain"
+        case categoryID = "category_id"
+        case reportedAt = "reported_at"
+    }
+}
+
+struct AbuseHistoryResponse: Codable, Sendable {
+    var entries: [AbuseHistoryEntry]
+}
+
+struct MailingList: Codable, Identifiable, Equatable, Sendable {
+    var sender: String
+    var displayName: String
+    var senderDomain: String
+    var firstSeen: String
+    var lastSeen: String
+    var lastSubject: String
+    var unsubscribedAt: String?
+    var error: String?
+
+    var id: String { sender }
+
+    enum CodingKeys: String, CodingKey {
+        case sender, error
+        case displayName = "display_name"
+        case senderDomain = "sender_domain"
+        case firstSeen = "first_seen"
+        case lastSeen = "last_seen"
+        case lastSubject = "last_subject"
+        case unsubscribedAt = "unsubscribed_at"
+    }
+}
+
+struct MailingListsResponse: Codable, Sendable {
+    var lists: [MailingList]
 }
 
 struct PairedDevice: Codable, Identifiable, Equatable, Sendable {

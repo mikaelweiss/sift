@@ -34,6 +34,7 @@ type AllowlistEntry struct {
 	ID        int64  `json:"id"`
 	Pattern   string `json:"pattern"`
 	Kind      string `json:"kind"`
+	Builtin   bool   `json:"builtin"`
 	CreatedAt string `json:"created_at"`
 }
 
@@ -46,18 +47,12 @@ type AppSettings struct {
 	AIAPIKey            string  `json:"ai_api_key,omitempty"`
 	AIModel             string  `json:"ai_model"`
 	DeleteEnabled       bool    `json:"delete_enabled"`
-	TrashThreshold      float64 `json:"trash_threshold"`
+	JunkThreshold       float64 `json:"junk_threshold"`
 	DeleteThreshold     float64 `json:"delete_threshold"`
 	AbuseEnabled        bool    `json:"abuse_enabled"`
 	AbuseManualApproval bool    `json:"abuse_manual_approval"`
 	AbuseMinConfidence  float64 `json:"abuse_min_confidence"`
 	AbuseCooldownDays   int     `json:"abuse_cooldown_days"`
-	AbuseSMTPMode       string  `json:"abuse_smtp_mode"`
-	AbuseFromEmail      string  `json:"abuse_from_email"`
-	AbuseSMTPHost       string  `json:"abuse_smtp_host"`
-	AbuseSMTPPort       int     `json:"abuse_smtp_port"`
-	AbuseSMTPUsername   string  `json:"abuse_smtp_username"`
-	AbuseSMTPPassword   string  `json:"abuse_smtp_password,omitempty"`
 }
 
 type EmailEvent struct {
@@ -127,37 +122,77 @@ type ScanResult struct {
 	CategoryID   string
 	Confidence   float64
 	Action       string
-	RawHeaders   string
+	RawMessage   string
 	Applied      bool
 }
 
+// AbuseTarget is one place a report goes. Kind "netcraft" is an API submission; every other kind is an email.
+type AbuseTarget struct {
+	Address string `json:"address"`
+	Kind    string `json:"kind"`
+	Reason  string `json:"reason"`
+}
+
 type AbuseQueueItem struct {
-	ID                 int64    `json:"id"`
-	RootDomain         string   `json:"root_domain"`
-	SendingIP          string   `json:"sending_ip"`
-	CategoryID         string   `json:"category_id"`
-	Confidence         float64  `json:"confidence"`
-	HitCount           int      `json:"hit_count"`
-	Targets            []string `json:"targets"`
-	RedactedHeaders    string   `json:"redacted_headers"`
-	Subject            string   `json:"subject"`
-	Sender             string   `json:"sender"`
-	RepeatOffense      bool     `json:"repeat_offense"`
-	PreviousReportedAt string   `json:"previous_reported_at,omitempty"`
-	CreatedAt          string   `json:"created_at"`
-	UpdatedAt          string   `json:"updated_at"`
+	ID                 int64         `json:"id"`
+	RootDomain         string        `json:"root_domain"`
+	SendingIP          string        `json:"sending_ip"`
+	CategoryID         string        `json:"category_id"`
+	Confidence         float64       `json:"confidence"`
+	HitCount           int           `json:"hit_count"`
+	Targets            []AbuseTarget `json:"targets"`
+	RedactedHeaders    string        `json:"redacted_headers"`
+	Evidence           string        `json:"-"`
+	Subject            string        `json:"subject"`
+	Sender             string        `json:"sender"`
+	RepeatOffense      bool          `json:"repeat_offense"`
+	PreviousReportedAt string        `json:"previous_reported_at,omitempty"`
+	Status             string        `json:"status"`
+	CreatedAt          string        `json:"created_at"`
+	UpdatedAt          string        `json:"updated_at"`
+}
+
+type AbuseDelivery struct {
+	AbuseTarget
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 type AbuseHistoryEntry struct {
-	ID         int64    `json:"id"`
-	RootDomain string   `json:"root_domain"`
-	SendingIP  string   `json:"sending_ip"`
-	CategoryID string   `json:"category_id"`
-	HitCount   int      `json:"hit_count"`
-	Targets    []string `json:"targets"`
-	Status     string   `json:"status"`
-	ErrorMsg   string   `json:"error_msg,omitempty"`
-	ReportedAt string   `json:"reported_at"`
+	ID         int64           `json:"id"`
+	RootDomain string          `json:"root_domain"`
+	SendingIP  string          `json:"sending_ip"`
+	CategoryID string          `json:"category_id"`
+	HitCount   int             `json:"hit_count"`
+	Subject    string          `json:"subject"`
+	Sender     string          `json:"sender"`
+	Deliveries []AbuseDelivery `json:"deliveries"`
+	Status     string          `json:"status"`
+	ReportedAt string          `json:"reported_at"`
+}
+
+type MailingList struct {
+	Sender         string `json:"sender"`
+	DisplayName    string `json:"display_name"`
+	SenderDomain   string `json:"sender_domain"`
+	UnsubscribeURL string `json:"-"`
+	FirstSeen      string `json:"first_seen"`
+	LastSeen       string `json:"last_seen"`
+	LastSubject    string `json:"last_subject"`
+	UnsubscribedAt string `json:"unsubscribed_at,omitempty"`
+	Error          string `json:"error,omitempty"`
+}
+
+// MailingListSighting is one message carrying a one-click unsubscribe header.
+type MailingListSighting struct {
+	Sender         string
+	DisplayName    string
+	SenderDomain   string
+	UnsubscribeURL string
+	DMARCPass      bool
+	Flagged        bool
+	EmailDate      string
+	Subject        string
 }
 
 type PairedDevice struct {
@@ -384,6 +419,64 @@ func (s *Store) migrate() error {
 				`CREATE INDEX IF NOT EXISTS idx_scan_results_job ON scan_results(job_id, applied, action)`,
 			},
 		},
+		{
+			version: 6,
+			stmts: append([]string{
+				`ALTER TABLE allowlist ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0`,
+				`ALTER TABLE scan_results DROP COLUMN raw_headers`,
+				`ALTER TABLE scan_results ADD COLUMN raw_message TEXT NOT NULL DEFAULT ''`,
+				`UPDATE scan_results SET action = 'junk' WHERE action = 'trash'`,
+				`UPDATE email_events SET action = 'junk' WHERE action = 'trash'`,
+				`UPDATE settings SET key = 'junk_threshold' WHERE key = 'trash_threshold'`,
+				`DELETE FROM settings WHERE key IN ('abuse_smtp_mode', 'abuse_from_email', 'abuse_smtp_host', 'abuse_smtp_port', 'abuse_smtp_username', 'abuse_smtp_password', 'spam_action')`,
+				`DROP TABLE abuse_queue`,
+				`CREATE TABLE abuse_queue (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					root_domain TEXT NOT NULL UNIQUE,
+					sending_ip TEXT NOT NULL,
+					category_id TEXT NOT NULL,
+					confidence REAL NOT NULL,
+					hit_count INTEGER NOT NULL DEFAULT 1,
+					targets_json TEXT NOT NULL DEFAULT '[]',
+					redacted_headers TEXT NOT NULL,
+					evidence TEXT NOT NULL DEFAULT '',
+					subject TEXT NOT NULL,
+					sender TEXT NOT NULL,
+					repeat_offense INTEGER NOT NULL DEFAULT 0,
+					previous_reported_at TEXT NOT NULL DEFAULT '',
+					status TEXT NOT NULL DEFAULT 'pending',
+					created_at TEXT NOT NULL,
+					updated_at TEXT NOT NULL
+				)`,
+				`DROP TABLE abuse_history`,
+				`CREATE TABLE abuse_history (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					root_domain TEXT NOT NULL,
+					sending_ip TEXT NOT NULL,
+					category_id TEXT NOT NULL,
+					hit_count INTEGER NOT NULL,
+					subject TEXT NOT NULL DEFAULT '',
+					sender TEXT NOT NULL DEFAULT '',
+					deliveries_json TEXT NOT NULL DEFAULT '[]',
+					status TEXT NOT NULL,
+					reported_at TEXT NOT NULL
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_abuse_history_domain ON abuse_history(root_domain, reported_at)`,
+				`CREATE TABLE IF NOT EXISTS mailing_lists (
+					sender TEXT PRIMARY KEY,
+					display_name TEXT NOT NULL DEFAULT '',
+					sender_domain TEXT NOT NULL,
+					unsubscribe_url TEXT NOT NULL,
+					dmarc_pass INTEGER NOT NULL,
+					flagged INTEGER NOT NULL DEFAULT 0,
+					first_seen TEXT NOT NULL,
+					last_seen TEXT NOT NULL,
+					last_subject TEXT NOT NULL DEFAULT '',
+					unsubscribed_at TEXT NOT NULL DEFAULT '',
+					error TEXT NOT NULL DEFAULT ''
+				)`,
+			}, builtinAllowlistInserts()...),
+		},
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -489,6 +582,23 @@ func (s *Store) seedBuiltinCategories() error {
 	return nil
 }
 
+// BuiltinAllowlistDomains are brands often impersonated by phishing. They are seeded once, so a user can remove any of them,
+// and they only apply when the message passes DMARC for the sender's domain.
+var BuiltinAllowlistDomains = []string{
+	"amazon.com", "apple.com", "bankofamerica.com", "chase.com", "docusign.net", "fedex.com", "github.com",
+	"google.com", "intuit.com", "linkedin.com", "microsoft.com", "netflix.com", "paypal.com", "stripe.com",
+	"ups.com", "usps.com", "venmo.com", "wellsfargo.com",
+}
+
+func builtinAllowlistInserts() []string {
+	stmts := make([]string, 0, len(BuiltinAllowlistDomains))
+	for _, d := range BuiltinAllowlistDomains {
+		stmts = append(stmts, fmt.Sprintf(
+			`INSERT OR IGNORE INTO allowlist(pattern, kind, builtin, created_at) VALUES('%s', 'domain', 1, strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', 'now'))`, d))
+	}
+	return stmts
+}
+
 func (s *Store) SetRawSetting(key, value string, encrypted bool) error {
 	stored := value
 	if encrypted && value != "" {
@@ -533,15 +643,12 @@ func DefaultSettings() AppSettings {
 		IMAPPort:            993,
 		AIProvider:          "typesafe",
 		AIModel:             "jev-latest",
-		TrashThreshold:      0.85,
+		JunkThreshold:       0.85,
 		DeleteThreshold:     0.95,
 		AbuseEnabled:        true,
 		AbuseManualApproval: true,
 		AbuseMinConfidence:  0.95,
 		AbuseCooldownDays:   7,
-		AbuseSMTPMode:       "icloud_alias",
-		AbuseSMTPHost:       "smtp.mail.me.com",
-		AbuseSMTPPort:       587,
 	}
 }
 
@@ -591,9 +698,9 @@ func (s *Store) GetSettings() (AppSettings, error) {
 			}
 		case "delete_enabled":
 			cfg.DeleteEnabled = v == "true"
-		case "trash_threshold":
+		case "junk_threshold":
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				cfg.TrashThreshold = f
+				cfg.JunkThreshold = f
 			}
 		case "delete_threshold":
 			if f, err := strconv.ParseFloat(v, 64); err == nil {
@@ -611,24 +718,6 @@ func (s *Store) GetSettings() (AppSettings, error) {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				cfg.AbuseCooldownDays = n
 			}
-		case "abuse_smtp_mode":
-			if v != "" {
-				cfg.AbuseSMTPMode = v
-			}
-		case "abuse_from_email":
-			cfg.AbuseFromEmail = v
-		case "abuse_smtp_host":
-			if v != "" {
-				cfg.AbuseSMTPHost = v
-			}
-		case "abuse_smtp_port":
-			if n, err := strconv.Atoi(v); err == nil && n > 0 {
-				cfg.AbuseSMTPPort = n
-			}
-		case "abuse_smtp_username":
-			cfg.AbuseSMTPUsername = v
-		case "abuse_smtp_password":
-			cfg.AbuseSMTPPassword = v
 		}
 	}
 	return cfg, rows.Err()
@@ -646,17 +735,12 @@ func (s *Store) SaveSettings(cfg AppSettings) error {
 		{"ai_provider", cfg.AIProvider, false},
 		{"ai_model", cfg.AIModel, false},
 		{"delete_enabled", strconv.FormatBool(cfg.DeleteEnabled), false},
-		{"trash_threshold", strconv.FormatFloat(cfg.TrashThreshold, 'f', 4, 64), false},
+		{"junk_threshold", strconv.FormatFloat(cfg.JunkThreshold, 'f', 4, 64), false},
 		{"delete_threshold", strconv.FormatFloat(cfg.DeleteThreshold, 'f', 4, 64), false},
 		{"abuse_enabled", strconv.FormatBool(cfg.AbuseEnabled), false},
 		{"abuse_manual_approval", strconv.FormatBool(cfg.AbuseManualApproval), false},
 		{"abuse_min_confidence", strconv.FormatFloat(cfg.AbuseMinConfidence, 'f', 4, 64), false},
 		{"abuse_cooldown_days", strconv.Itoa(cfg.AbuseCooldownDays), false},
-		{"abuse_smtp_mode", cfg.AbuseSMTPMode, false},
-		{"abuse_from_email", cfg.AbuseFromEmail, false},
-		{"abuse_smtp_host", cfg.AbuseSMTPHost, false},
-		{"abuse_smtp_port", strconv.Itoa(cfg.AbuseSMTPPort), false},
-		{"abuse_smtp_username", cfg.AbuseSMTPUsername, false},
 	}
 	if cfg.IMAPPassword != "" {
 		pairs = append(pairs, struct {
@@ -671,13 +755,6 @@ func (s *Store) SaveSettings(cfg AppSettings) error {
 			value     string
 			encrypted bool
 		}{"ai_api_key", cfg.AIAPIKey, true})
-	}
-	if cfg.AbuseSMTPPassword != "" {
-		pairs = append(pairs, struct {
-			key       string
-			value     string
-			encrypted bool
-		}{"abuse_smtp_password", cfg.AbuseSMTPPassword, true})
 	}
 	for _, p := range pairs {
 		if err := s.SetRawSetting(p.key, p.value, p.encrypted); err != nil {
@@ -793,7 +870,7 @@ func (s *Store) DeleteCategory(id string) error {
 }
 
 func (s *Store) ListAllowlist() ([]AllowlistEntry, error) {
-	rows, err := s.db.Query(`SELECT id, pattern, kind, created_at FROM allowlist ORDER BY pattern ASC`)
+	rows, err := s.db.Query(`SELECT id, pattern, kind, builtin, created_at FROM allowlist ORDER BY pattern ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -802,9 +879,11 @@ func (s *Store) ListAllowlist() ([]AllowlistEntry, error) {
 	var out []AllowlistEntry
 	for rows.Next() {
 		var e AllowlistEntry
-		if err := rows.Scan(&e.ID, &e.Pattern, &e.Kind, &e.CreatedAt); err != nil {
+		var builtin int
+		if err := rows.Scan(&e.ID, &e.Pattern, &e.Kind, &builtin, &e.CreatedAt); err != nil {
 			return nil, err
 		}
+		e.Builtin = builtin == 1
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -834,17 +913,6 @@ func (s *Store) AddAllowlistEntry(pattern, kind string) (AllowlistEntry, error) 
 func (s *Store) DeleteAllowlistEntry(id int64) error {
 	_, err := s.db.Exec(`DELETE FROM allowlist WHERE id = ?`, id)
 	return err
-}
-
-func (s *Store) IsAllowlisted(senderEmail, senderDomain string) (bool, error) {
-	email := strings.ToLower(strings.TrimSpace(senderEmail))
-	domain := strings.ToLower(strings.TrimSpace(senderDomain))
-	var count int
-	err := s.db.QueryRow(
-		`SELECT COUNT(1) FROM allowlist WHERE (kind = 'email' AND pattern = ?) OR (kind = 'domain' AND (pattern = ? OR ? LIKE '%.' || pattern))`,
-		email, domain, domain,
-	).Scan(&count)
-	return count > 0, err
 }
 
 func (s *Store) HasEmailEvent(mailbox string, uidValidity, uid uint32) (bool, error) {
@@ -898,7 +966,7 @@ func (s *Store) DailySpamStats(days int) ([]DailyCategoryStat, error) {
 	query := `SELECT substr(e.email_date, 1, 10) AS day, e.category_id, COALESCE(c.name, e.category_id) AS cat_name, COUNT(1) AS cnt
 		FROM email_events e
 		LEFT JOIN categories c ON c.id = e.category_id
-		WHERE e.action IN ('trash', 'delete') AND e.category_id != ''`
+		WHERE e.action IN ('junk', 'delete') AND e.category_id != ''`
 	var args []any
 	if days > 0 {
 		since := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02")
@@ -967,14 +1035,14 @@ func (s *Store) RecordScanResults(results []ScanResult) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scan_results(job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_headers, applied) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT OR REPLACE INTO scan_results(job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_message, applied) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
 	}
 	defer stmt.Close()
 	for _, r := range results {
-		if _, err := stmt.Exec(r.JobID, r.Mailbox, r.UIDValidity, r.UID, r.MessageID, r.Sender, r.SenderDomain, r.Subject, r.EmailDate, r.CategoryID, r.Confidence, r.Action, r.RawHeaders, boolToInt(r.Applied)); err != nil {
+		if _, err := stmt.Exec(r.JobID, r.Mailbox, r.UIDValidity, r.UID, r.MessageID, r.Sender, r.SenderDomain, r.Subject, r.EmailDate, r.CategoryID, r.Confidence, r.Action, r.RawMessage, boolToInt(r.Applied)); err != nil {
 			_ = tx.Rollback()
 			return err
 		}
@@ -983,7 +1051,7 @@ func (s *Store) RecordScanResults(results []ScanResult) error {
 }
 
 func (s *Store) ListPendingScanResults(jobID string) ([]ScanResult, error) {
-	rows, err := s.db.Query(`SELECT id, job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_headers, applied FROM scan_results WHERE job_id = ? AND applied = 0 ORDER BY mailbox ASC, uid ASC`, jobID)
+	rows, err := s.db.Query(`SELECT id, job_id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, category_id, confidence, action, raw_message, applied FROM scan_results WHERE job_id = ? AND applied = 0 ORDER BY mailbox ASC, uid ASC`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -992,7 +1060,7 @@ func (s *Store) ListPendingScanResults(jobID string) ([]ScanResult, error) {
 	for rows.Next() {
 		var r ScanResult
 		var applied int
-		if err := rows.Scan(&r.ID, &r.JobID, &r.Mailbox, &r.UIDValidity, &r.UID, &r.MessageID, &r.Sender, &r.SenderDomain, &r.Subject, &r.EmailDate, &r.CategoryID, &r.Confidence, &r.Action, &r.RawHeaders, &applied); err != nil {
+		if err := rows.Scan(&r.ID, &r.JobID, &r.Mailbox, &r.UIDValidity, &r.UID, &r.MessageID, &r.Sender, &r.SenderDomain, &r.Subject, &r.EmailDate, &r.CategoryID, &r.Confidence, &r.Action, &r.RawMessage, &applied); err != nil {
 			return nil, err
 		}
 		r.Applied = applied == 1
@@ -1003,7 +1071,7 @@ func (s *Store) ListPendingScanResults(jobID string) ([]ScanResult, error) {
 
 func (s *Store) ListScanMatches(jobID string) ([]ScanMatch, error) {
 	rows, err := s.db.Query(`SELECT mailbox, uid, sender, subject, email_date, category_id, confidence, action FROM scan_results
-		WHERE job_id = ? AND action IN ('trash', 'delete') ORDER BY confidence DESC, email_date DESC`, jobID)
+		WHERE job_id = ? AND action IN ('junk', 'delete') ORDER BY confidence DESC, email_date DESC`, jobID)
 	if err != nil {
 		return nil, err
 	}
@@ -1019,11 +1087,11 @@ func (s *Store) ListScanMatches(jobID string) ([]ScanMatch, error) {
 	return out, rows.Err()
 }
 
-// ListTrashedEvents returns the latest trash event per Message-ID. The Message-ID is how a
-// trashed email is found again, since moving it gives it a new UID in the Trash mailbox.
-func (s *Store) ListTrashedEvents() (map[string]EmailEvent, error) {
+// ListJunkedEvents returns the latest junk event per Message-ID. The Message-ID is how a
+// junked email is found again, since moving it gives it a new UID in the Junk mailbox.
+func (s *Store) ListJunkedEvents() (map[string]EmailEvent, error) {
 	rows, err := s.db.Query(`SELECT id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source
-		FROM email_events WHERE action = 'trash' AND message_id != '' ORDER BY id ASC`)
+		FROM email_events WHERE action = 'junk' AND message_id != '' ORDER BY id ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1039,7 +1107,7 @@ func (s *Store) ListTrashedEvents() (map[string]EmailEvent, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) MarkTrashedEventsDeleted(messageIDs []string) error {
+func (s *Store) MarkJunkedEventsDeleted(messageIDs []string) error {
 	if len(messageIDs) == 0 {
 		return nil
 	}
@@ -1047,7 +1115,7 @@ func (s *Store) MarkTrashedEventsDeleted(messageIDs []string) error {
 	if err != nil {
 		return err
 	}
-	stmt, err := tx.Prepare(`UPDATE email_events SET action = 'delete' WHERE action = 'trash' AND message_id IN (?, ?)`)
+	stmt, err := tx.Prepare(`UPDATE email_events SET action = 'delete' WHERE action = 'junk' AND message_id IN (?, ?)`)
 	if err != nil {
 		_ = tx.Rollback()
 		return err
@@ -1136,7 +1204,7 @@ func (s *Store) DismissAbuseDomain(rootDomain string) error {
 func (s *Store) LastAbuseReportTime(rootDomain string) (time.Time, bool, error) {
 	var ts string
 	err := s.db.QueryRow(
-		`SELECT reported_at FROM abuse_history WHERE root_domain = ? AND status = 'sent' ORDER BY reported_at DESC LIMIT 1`,
+		`SELECT reported_at FROM abuse_history WHERE root_domain = ? AND status IN ('sent', 'partial') ORDER BY reported_at DESC LIMIT 1`,
 		strings.ToLower(rootDomain),
 	).Scan(&ts)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1152,14 +1220,16 @@ func (s *Store) LastAbuseReportTime(rootDomain string) (time.Time, bool, error) 
 	return t, true, nil
 }
 
+const abuseQueueColumns = `id, root_domain, sending_ip, category_id, confidence, hit_count, targets_json, redacted_headers, evidence, subject, sender, repeat_offense, previous_reported_at, status, created_at, updated_at`
+
 func (s *Store) UpsertAbuseQueueItem(item AbuseQueueItem) (AbuseQueueItem, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	domain := strings.ToLower(strings.TrimSpace(item.RootDomain))
 	targetsBytes, _ := json.Marshal(item.Targets)
 
 	_, err := s.db.Exec(
-		`INSERT INTO abuse_queue(root_domain, sending_ip, category_id, confidence, hit_count, targets_json, redacted_headers, subject, sender, repeat_offense, previous_reported_at, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO abuse_queue(root_domain, sending_ip, category_id, confidence, hit_count, targets_json, redacted_headers, evidence, subject, sender, repeat_offense, previous_reported_at, status, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 		 ON CONFLICT(root_domain) DO UPDATE SET
 		   sending_ip=excluded.sending_ip,
 		   category_id=excluded.category_id,
@@ -1167,13 +1237,15 @@ func (s *Store) UpsertAbuseQueueItem(item AbuseQueueItem) (AbuseQueueItem, error
 		   hit_count=abuse_queue.hit_count + 1,
 		   targets_json=excluded.targets_json,
 		   redacted_headers=excluded.redacted_headers,
+		   evidence=excluded.evidence,
 		   subject=excluded.subject,
 		   sender=excluded.sender,
 		   repeat_offense=excluded.repeat_offense,
 		   previous_reported_at=excluded.previous_reported_at,
-		   updated_at=excluded.updated_at`,
+		   updated_at=excluded.updated_at
+		 WHERE abuse_queue.status = 'pending'`,
 		domain, item.SendingIP, item.CategoryID, item.Confidence, string(targetsBytes),
-		item.RedactedHeaders, item.Subject, item.Sender, boolToInt(item.RepeatOffense),
+		item.RedactedHeaders, item.Evidence, item.Subject, item.Sender, boolToInt(item.RepeatOffense),
 		item.PreviousReportedAt, now, now,
 	)
 	if err != nil {
@@ -1183,17 +1255,15 @@ func (s *Store) UpsertAbuseQueueItem(item AbuseQueueItem) (AbuseQueueItem, error
 }
 
 func (s *Store) GetAbuseQueueItemByDomain(rootDomain string) (AbuseQueueItem, error) {
-	row := s.db.QueryRow(`SELECT id, root_domain, sending_ip, category_id, confidence, hit_count, targets_json, redacted_headers, subject, sender, repeat_offense, previous_reported_at, created_at, updated_at FROM abuse_queue WHERE root_domain = ?`, strings.ToLower(rootDomain))
-	return scanAbuseQueueItem(row)
+	return scanAbuseQueueItem(s.db.QueryRow(`SELECT `+abuseQueueColumns+` FROM abuse_queue WHERE root_domain = ?`, strings.ToLower(rootDomain)))
 }
 
 func (s *Store) GetAbuseQueueItem(id int64) (AbuseQueueItem, error) {
-	row := s.db.QueryRow(`SELECT id, root_domain, sending_ip, category_id, confidence, hit_count, targets_json, redacted_headers, subject, sender, repeat_offense, previous_reported_at, created_at, updated_at FROM abuse_queue WHERE id = ?`, id)
-	return scanAbuseQueueItem(row)
+	return scanAbuseQueueItem(s.db.QueryRow(`SELECT `+abuseQueueColumns+` FROM abuse_queue WHERE id = ?`, id))
 }
 
 func (s *Store) ListAbuseQueue() ([]AbuseQueueItem, error) {
-	rows, err := s.db.Query(`SELECT id, root_domain, sending_ip, category_id, confidence, hit_count, targets_json, redacted_headers, subject, sender, repeat_offense, previous_reported_at, created_at, updated_at FROM abuse_queue ORDER BY updated_at DESC`)
+	rows, err := s.db.Query(`SELECT ` + abuseQueueColumns + ` FROM abuse_queue ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1201,17 +1271,33 @@ func (s *Store) ListAbuseQueue() ([]AbuseQueueItem, error) {
 
 	var out []AbuseQueueItem
 	for rows.Next() {
-		var it AbuseQueueItem
-		var targetsJSON string
-		var repeat int
-		if err := rows.Scan(&it.ID, &it.RootDomain, &it.SendingIP, &it.CategoryID, &it.Confidence, &it.HitCount, &targetsJSON, &it.RedactedHeaders, &it.Subject, &it.Sender, &repeat, &it.PreviousReportedAt, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		it, err := scanAbuseQueueItem(rows)
+		if err != nil {
 			return nil, err
 		}
-		it.RepeatOffense = repeat == 1
-		_ = json.Unmarshal([]byte(targetsJSON), &it.Targets)
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// ClaimAbuseQueueItem moves a pending item to sending and reports whether this caller won the claim.
+func (s *Store) ClaimAbuseQueueItem(id int64) (bool, error) {
+	res, err := s.db.Exec(`UPDATE abuse_queue SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'pending'`, time.Now().UTC().Format(time.RFC3339), id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *Store) ReleaseAbuseQueueItem(id int64) error {
+	_, err := s.db.Exec(`UPDATE abuse_queue SET status = 'pending' WHERE id = ?`, id)
+	return err
+}
+
+func (s *Store) ReleaseSendingAbuseQueue() error {
+	_, err := s.db.Exec(`UPDATE abuse_queue SET status = 'pending' WHERE status = 'sending'`)
+	return err
 }
 
 func (s *Store) DeleteAbuseQueueItem(id int64) error {
@@ -1223,11 +1309,107 @@ func (s *Store) RecordAbuseHistory(entry AbuseHistoryEntry) error {
 	if entry.ReportedAt == "" {
 		entry.ReportedAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	targetsBytes, _ := json.Marshal(entry.Targets)
+	deliveriesBytes, _ := json.Marshal(entry.Deliveries)
 	_, err := s.db.Exec(
-		`INSERT INTO abuse_history(root_domain, sending_ip, category_id, hit_count, targets_json, status, error_msg, reported_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
-		strings.ToLower(entry.RootDomain), entry.SendingIP, entry.CategoryID, entry.HitCount, string(targetsBytes), entry.Status, entry.ErrorMsg, entry.ReportedAt,
+		`INSERT INTO abuse_history(root_domain, sending_ip, category_id, hit_count, subject, sender, deliveries_json, status, reported_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		strings.ToLower(entry.RootDomain), entry.SendingIP, entry.CategoryID, entry.HitCount, entry.Subject, entry.Sender, string(deliveriesBytes), entry.Status, entry.ReportedAt,
 	)
+	return err
+}
+
+func (s *Store) ListAbuseHistory(limit int) ([]AbuseHistoryEntry, error) {
+	rows, err := s.db.Query(`SELECT id, root_domain, sending_ip, category_id, hit_count, subject, sender, deliveries_json, status, reported_at FROM abuse_history ORDER BY reported_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AbuseHistoryEntry{}
+	for rows.Next() {
+		var e AbuseHistoryEntry
+		var deliveriesJSON string
+		if err := rows.Scan(&e.ID, &e.RootDomain, &e.SendingIP, &e.CategoryID, &e.HitCount, &e.Subject, &e.Sender, &deliveriesJSON, &e.Status, &e.ReportedAt); err != nil {
+			return nil, err
+		}
+		e.Deliveries = []AbuseDelivery{}
+		_ = json.Unmarshal([]byte(deliveriesJSON), &e.Deliveries)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// RecordMailingListSightings keeps one row per sender. A sender stays eligible only if every sighting passed DMARC
+// and none was classified into an abuse-eligible category.
+func (s *Store) RecordMailingListSightings(sightings []MailingListSighting) error {
+	if len(sightings) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO mailing_lists(sender, display_name, sender_domain, unsubscribe_url, dmarc_pass, flagged, first_seen, last_seen, last_subject)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(sender) DO UPDATE SET
+		  dmarc_pass = MIN(mailing_lists.dmarc_pass, excluded.dmarc_pass),
+		  flagged = MAX(mailing_lists.flagged, excluded.flagged),
+		  first_seen = MIN(mailing_lists.first_seen, excluded.first_seen),
+		  display_name = CASE WHEN excluded.last_seen >= mailing_lists.last_seen THEN excluded.display_name ELSE mailing_lists.display_name END,
+		  unsubscribe_url = CASE WHEN excluded.last_seen >= mailing_lists.last_seen THEN excluded.unsubscribe_url ELSE mailing_lists.unsubscribe_url END,
+		  last_subject = CASE WHEN excluded.last_seen >= mailing_lists.last_seen THEN excluded.last_subject ELSE mailing_lists.last_subject END,
+		  last_seen = MAX(mailing_lists.last_seen, excluded.last_seen)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	for _, m := range sightings {
+		sender := strings.ToLower(strings.TrimSpace(m.Sender))
+		if sender == "" || m.UnsubscribeURL == "" || m.EmailDate == "" {
+			continue
+		}
+		if _, err := stmt.Exec(sender, m.DisplayName, strings.ToLower(m.SenderDomain), m.UnsubscribeURL, boolToInt(m.DMARCPass), boolToInt(m.Flagged), m.EmailDate, m.EmailDate, m.Subject); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// A sender must have mailed the user over at least 30 days, which a fresh spam campaign cannot fake.
+const legitMailingListFilter = `dmarc_pass = 1 AND flagged = 0 AND julianday(last_seen) - julianday(first_seen) >= 30`
+
+func (s *Store) ListLegitMailingLists() ([]MailingList, error) {
+	rows, err := s.db.Query(`SELECT sender, display_name, sender_domain, unsubscribe_url, first_seen, last_seen, last_subject, unsubscribed_at, error
+		FROM mailing_lists WHERE ` + legitMailingListFilter + ` ORDER BY unsubscribed_at != '' ASC, last_seen DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MailingList{}
+	for rows.Next() {
+		var m MailingList
+		if err := rows.Scan(&m.Sender, &m.DisplayName, &m.SenderDomain, &m.UnsubscribeURL, &m.FirstSeen, &m.LastSeen, &m.LastSubject, &m.UnsubscribedAt, &m.Error); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// GetLegitMailingList returns the sender only while it still meets the legitimacy filter.
+func (s *Store) GetLegitMailingList(sender string) (*MailingList, error) {
+	var m MailingList
+	err := s.db.QueryRow(`SELECT sender, display_name, sender_domain, unsubscribe_url, first_seen, last_seen, last_subject, unsubscribed_at, error
+		FROM mailing_lists WHERE sender = ? AND `+legitMailingListFilter, strings.ToLower(strings.TrimSpace(sender))).
+		Scan(&m.Sender, &m.DisplayName, &m.SenderDomain, &m.UnsubscribeURL, &m.FirstSeen, &m.LastSeen, &m.LastSubject, &m.UnsubscribedAt, &m.Error)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return &m, err
+}
+
+func (s *Store) MarkMailingListResult(sender string, unsubscribedAt, errMsg string) error {
+	_, err := s.db.Exec(`UPDATE mailing_lists SET unsubscribed_at = ?, error = ? WHERE sender = ?`, unsubscribedAt, errMsg, strings.ToLower(strings.TrimSpace(sender)))
 	return err
 }
 
@@ -1343,15 +1525,20 @@ func (s *Store) ConsumePairingCode(codeHash string) (bool, error) {
 	return err == nil, err
 }
 
-func scanAbuseQueueItem(row *sql.Row) (AbuseQueueItem, error) {
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanAbuseQueueItem(row rowScanner) (AbuseQueueItem, error) {
 	var it AbuseQueueItem
 	var targetsJSON string
 	var repeat int
-	err := row.Scan(&it.ID, &it.RootDomain, &it.SendingIP, &it.CategoryID, &it.Confidence, &it.HitCount, &targetsJSON, &it.RedactedHeaders, &it.Subject, &it.Sender, &repeat, &it.PreviousReportedAt, &it.CreatedAt, &it.UpdatedAt)
+	err := row.Scan(&it.ID, &it.RootDomain, &it.SendingIP, &it.CategoryID, &it.Confidence, &it.HitCount, &targetsJSON, &it.RedactedHeaders, &it.Evidence, &it.Subject, &it.Sender, &repeat, &it.PreviousReportedAt, &it.Status, &it.CreatedAt, &it.UpdatedAt)
 	if err != nil {
 		return it, err
 	}
 	it.RepeatOffense = repeat == 1
+	it.Targets = []AbuseTarget{}
 	_ = json.Unmarshal([]byte(targetsJSON), &it.Targets)
 	return it, nil
 }

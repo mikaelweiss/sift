@@ -1,10 +1,10 @@
 import SwiftUI
 
-struct TrashSheet: View {
+struct JunkSheet: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
-    @State private var listing: TrashListing?
+    @State private var listing: JunkListing?
     @State private var selection: Set<UInt32> = []
     @State private var isLoading = false
     @State private var isDeleting = false
@@ -15,12 +15,12 @@ struct TrashSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Image(systemName: "trash.fill")
+                Image(systemName: "xmark.bin.fill")
                     .foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Spam in Trash")
+                    Text("Spam in Junk")
                         .font(.title3.bold())
-                    Text("Only mail Sift moved to Trash. Mail you trashed yourself is never shown or deleted here.")
+                    Text("Only mail Sift moved to Junk. Anything else in Junk is never shown or deleted here.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -103,7 +103,7 @@ struct TrashSheet: View {
                     Image(systemName: "checkmark.seal.fill")
                         .font(.system(size: 36))
                         .foregroundStyle(.green)
-                    Text("No spam waiting in Trash")
+                    Text("No spam waiting in Junk")
                         .font(.headline)
                 }
             } else {
@@ -112,11 +112,11 @@ struct TrashSheet: View {
                 }
             }
         } else if isLoading {
-            ProgressView("Reading Trash...")
+            ProgressView("Reading Junk...")
         }
     }
 
-    private func row(_ item: TrashItem) -> some View {
+    private func row(_ item: JunkItem) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.subject.isEmpty ? "(No subject)" : item.subject)
@@ -142,11 +142,11 @@ struct TrashSheet: View {
         isLoading = true
         defer { isLoading = false }
         do {
-            listing = try await client.listTrash()
+            listing = try await client.listJunk()
             selection = selection.intersection(Set(listing?.items.map(\.uid) ?? []))
             errorMessage = nil
         } catch {
-            errorMessage = "Could not read Trash: \(error.localizedDescription)"
+            errorMessage = "Could not read Junk: \(error.localizedDescription)"
         }
     }
 
@@ -155,7 +155,7 @@ struct TrashSheet: View {
         isDeleting = true
         defer { isDeleting = false }
         do {
-            let deleted = try await client.deleteFromTrash(uidValidity: listing.uidValidity, uids: uids)
+            let deleted = try await client.deleteFromJunk(uidValidity: listing.uidValidity, uids: uids)
             statusBanner = "Permanently deleted \(deleted) \(deleted == 1 ? "email" : "emails")."
             errorMessage = nil
             selection.subtract(uids)

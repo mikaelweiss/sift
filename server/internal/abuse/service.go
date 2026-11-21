@@ -2,7 +2,11 @@ package abuse
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/mikaelweiss/sift/server/internal/db"
@@ -11,18 +15,24 @@ import (
 type Candidate struct {
 	SenderEmail  string
 	SenderDomain string
+	From         string
 	Subject      string
-	RawHeaders   string
+	RawMessage   string
+	LinkDomains  []string
 	CategoryID   string
 	Confidence   float64
 	EmailDate    time.Time
 }
 
+const deliveryTimeout = 10 * time.Minute
+
 type Service struct {
 	store          *db.Store
 	resolver       *Resolver
 	sender         Sender
+	netcraft       func(ctx context.Context, reporterEmail, message string) error
 	nowFn          func() time.Time
+	sending        sync.WaitGroup
 	OnQueueChanged func(pendingCount int)
 }
 
@@ -33,10 +43,15 @@ func NewService(store *db.Store, resolver *Resolver, sender Sender) *Service {
 	if sender == nil {
 		sender = NewSMTPSender()
 	}
+	// A restart mid-delivery leaves items marked sending. Returning them to the queue lets the user approve again.
+	if err := store.ReleaseSendingAbuseQueue(); err != nil {
+		log.Printf("abuse: release interrupted reports: %v", err)
+	}
 	return &Service{
 		store:    store,
 		resolver: resolver,
 		sender:   sender,
+		netcraft: newNetcraftReporter().Report,
 		nowFn:    func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -102,20 +117,21 @@ func (s *Service) Consider(ctx context.Context, c Candidate) error {
 		prevReportedAt = lastTime.Format(time.RFC3339)
 	}
 
-	sendingIP := ExtractOriginatingIP(c.RawHeaders)
-	contacts, err := s.resolver.ResolveContacts(ctx, sendingIP, rootDomain)
-	if err != nil || len(contacts) == 0 {
+	headers := headerBlock(c.RawMessage)
+	sendingIP := ExtractOriginatingIP(headers)
+	targets := s.resolver.ResolveTargets(ctx, c, headers, sendingIP, rootDomain)
+	if len(targets) == 0 {
 		return nil
 	}
 
-	redacted := RedactHeaders(c.RawHeaders, cfg.IMAPUsername, cfg.AbuseFromEmail)
 	item, err := s.store.UpsertAbuseQueueItem(db.AbuseQueueItem{
 		RootDomain:         rootDomain,
 		SendingIP:          sendingIP,
 		CategoryID:         c.CategoryID,
 		Confidence:         c.Confidence,
-		Targets:            contacts,
-		RedactedHeaders:    redacted,
+		Targets:            targets,
+		RedactedHeaders:    RedactHeaders(headers, cfg.IMAPUsername),
+		Evidence:           RedactHeaders(c.RawMessage, cfg.IMAPUsername),
 		Subject:            c.Subject,
 		Sender:             c.SenderEmail,
 		RepeatOffense:      repeatOffense,
@@ -125,50 +141,111 @@ func (s *Service) Consider(ctx context.Context, c Candidate) error {
 		return err
 	}
 
-	if !cfg.AbuseManualApproval {
-		_, err = s.ApproveAndSend(ctx, item.ID)
-		return err
+	if !cfg.AbuseManualApproval && item.Status == "pending" {
+		return s.Approve(item.ID)
 	}
 	s.notifyQueueChanged()
 	return nil
 }
 
-func (s *Service) ApproveAndSend(ctx context.Context, queueID int64) (db.AbuseHistoryEntry, error) {
+// Approve marks the report as sending and delivers it in the background.
+func (s *Service) Approve(queueID int64) error {
+	claimed, err := s.store.ClaimAbuseQueueItem(queueID)
+	if err != nil {
+		return err
+	}
+	if !claimed {
+		return errors.New("this report is already sending or no longer queued")
+	}
+	s.notifyQueueChanged()
+	s.sending.Add(1)
+	go func() {
+		defer s.sending.Done()
+		s.deliver(queueID)
+	}()
+	return nil
+}
+
+// WaitForDeliveries blocks until every background delivery has finished.
+func (s *Service) WaitForDeliveries() {
+	s.sending.Wait()
+}
+
+func (s *Service) deliver(queueID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), deliveryTimeout)
+	defer cancel()
+	defer s.notifyQueueChanged()
+
 	item, err := s.store.GetAbuseQueueItem(queueID)
 	if err != nil {
-		return db.AbuseHistoryEntry{}, err
+		log.Printf("abuse: load report %d: %v", queueID, err)
+		return
 	}
 	cfg, err := s.store.GetSettings()
 	if err != nil {
-		return db.AbuseHistoryEntry{}, err
+		log.Printf("abuse: load settings: %v", err)
+		_ = s.store.ReleaseAbuseQueueItem(queueID)
+		return
 	}
 
-	subject, body := FormatReport(item)
-	sendErr := s.sender.Send(ctx, cfg, item.Targets, subject, body)
-	entry := db.AbuseHistoryEntry{
+	deliveries := make([]db.AbuseDelivery, 0, len(item.Targets))
+	for _, target := range item.Targets {
+		var sendErr error
+		if target.Kind == KindNetcraft {
+			sendErr = s.netcraft(ctx, cfg.IMAPUsername, item.Evidence)
+		} else {
+			subject, body := FormatReport(item, target)
+			sendErr = s.sender.Send(ctx, cfg, Mail{
+				To:             target.Address,
+				Subject:        subject,
+				Body:           body,
+				Attachment:     []byte(item.Evidence),
+				AttachmentName: "evidence.eml",
+			})
+		}
+		d := db.AbuseDelivery{AbuseTarget: target, OK: sendErr == nil}
+		if sendErr != nil {
+			d.Error = sendErr.Error()
+		}
+		deliveries = append(deliveries, d)
+	}
+
+	status := deliveryStatus(deliveries)
+	if err := s.store.RecordAbuseHistory(db.AbuseHistoryEntry{
 		RootDomain: item.RootDomain,
 		SendingIP:  item.SendingIP,
 		CategoryID: item.CategoryID,
 		HitCount:   item.HitCount,
-		Targets:    item.Targets,
-		Status:     "sent",
+		Subject:    item.Subject,
+		Sender:     item.Sender,
+		Deliveries: deliveries,
+		Status:     status,
 		ReportedAt: s.nowFn().Format(time.RFC3339),
+	}); err != nil {
+		log.Printf("abuse: record history for %s: %v", item.RootDomain, err)
 	}
-	if sendErr != nil {
-		entry.Status = "failed"
-		entry.ErrorMsg = sendErr.Error()
-		_ = s.store.RecordAbuseHistory(entry)
-		return entry, sendErr
+	if status == "failed" {
+		_ = s.store.ReleaseAbuseQueueItem(queueID)
+		return
 	}
+	_ = s.store.DeleteAbuseQueueItem(queueID)
+}
 
-	if err := s.store.RecordAbuseHistory(entry); err != nil {
-		return entry, err
+func deliveryStatus(deliveries []db.AbuseDelivery) string {
+	ok := 0
+	for _, d := range deliveries {
+		if d.OK {
+			ok++
+		}
 	}
-	if err := s.store.DeleteAbuseQueueItem(queueID); err != nil {
-		return entry, err
+	switch {
+	case ok == len(deliveries) && ok > 0:
+		return "sent"
+	case ok == 0:
+		return "failed"
+	default:
+		return "partial"
 	}
-	s.notifyQueueChanged()
-	return entry, nil
 }
 
 func (s *Service) Dismiss(queueID int64) error {
@@ -183,26 +260,6 @@ func (s *Service) Dismiss(queueID int64) error {
 	return nil
 }
 
-func (s *Service) SendTest(ctx context.Context, toEmail string) error {
-	cfg, err := s.store.GetSettings()
-	if err != nil {
-		return err
-	}
-	if toEmail == "" {
-		toEmail = cfg.AbuseFromEmail
-	}
-	if toEmail == "" {
-		return fmt.Errorf("recipient email is required")
-	}
-	return s.sender.Send(
-		ctx,
-		cfg,
-		[]string{toEmail},
-		"[Sift] Abuse reporting SMTP test",
-		"This test message confirms Sift can deliver abuse reports using your configured SMTP settings.\n",
-	)
-}
-
 func (s *Service) notifyQueueChanged() {
 	if s.OnQueueChanged == nil {
 		return
@@ -211,4 +268,52 @@ func (s *Service) notifyQueueChanged() {
 	if err == nil {
 		s.OnQueueChanged(len(items))
 	}
+}
+
+func headerBlock(raw string) string {
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	if i := strings.Index(normalized, "\n\n"); i >= 0 {
+		return normalized[:i]
+	}
+	return normalized
+}
+
+var categoryLabels = map[string]string{
+	"phishing_scams":  "Phishing / scam",
+	"crypto_gambling": "Crypto / gambling scam",
+	"adult_explicit":  "Unsolicited adult content",
+}
+
+func FormatReport(item db.AbuseQueueItem, target db.AbuseTarget) (subject, body string) {
+	label := categoryLabels[item.CategoryID]
+	if label == "" {
+		label = "Unsolicited bulk email"
+	}
+	prefix := "Abuse Report"
+	if item.RepeatOffense {
+		prefix = "Repeat Abuse Report"
+	}
+	subject = fmt.Sprintf("[%s] %s from %s", prefix, label, item.RootDomain)
+
+	var b strings.Builder
+	b.WriteString("Hello,\n\n")
+	b.WriteString(fmt.Sprintf("I am reporting an unsolicited email. You are receiving this report because: %s.\n\n", target.Reason))
+	b.WriteString(fmt.Sprintf("Sender: %s\n", item.Sender))
+	b.WriteString(fmt.Sprintf("Sender domain: %s\n", item.RootDomain))
+	if item.SendingIP != "" {
+		b.WriteString(fmt.Sprintf("Originating IP: %s\n", item.SendingIP))
+	}
+	b.WriteString(fmt.Sprintf("Subject: %s\n", item.Subject))
+	b.WriteString(fmt.Sprintf("Type: %s\n", label))
+	b.WriteString(fmt.Sprintf("Messages received: %d\n", item.HitCount))
+	if item.RepeatOffense && item.PreviousReportedAt != "" {
+		b.WriteString(fmt.Sprintf("Previously reported: %s\n", item.PreviousReportedAt))
+	}
+	b.WriteString("\nThe original message is attached as evidence.eml with my address removed. ")
+	b.WriteString("It holds the full headers and the first 64 KB of the message; attachments are not included.\n\n")
+	b.WriteString("Full headers:\n")
+	b.WriteString("------------------------------------------------------------\n")
+	b.WriteString(item.RedactedHeaders)
+	b.WriteString("\n------------------------------------------------------------\n")
+	return subject, b.String()
 }

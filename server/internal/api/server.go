@@ -20,6 +20,7 @@ import (
 	"github.com/mikaelweiss/sift/server/internal/db"
 	"github.com/mikaelweiss/sift/server/internal/imap"
 	"github.com/mikaelweiss/sift/server/internal/jev"
+	"github.com/mikaelweiss/sift/server/internal/unsubscribe"
 )
 
 type pairRequest struct {
@@ -38,6 +39,7 @@ type Server struct {
 	scanner        *imap.Scanner
 	abuseSvc       *abuse.Service
 	hub            *Hub
+	unsubscriber   *unsubscribe.Client
 	version        string
 	tlsFingerprint string
 
@@ -55,6 +57,7 @@ func NewServer(store *db.Store, watcher *imap.Watcher, scanner *imap.Scanner, ab
 		scanner:        scanner,
 		abuseSvc:       abuseSvc,
 		hub:            hub,
+		unsubscriber:   unsubscribe.New(),
 		version:        version,
 		tlsFingerprint: tlsFingerprint,
 		pairRequests:   make(map[string]*pairRequest),
@@ -106,13 +109,16 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/scans/{id}/apply", s.requireAuth(http.HandlerFunc(s.handleApplyScan)))
 	mux.Handle("GET /api/scans/{id}/matches", s.requireAuth(http.HandlerFunc(s.handleScanMatches)))
 
-	mux.Handle("GET /api/trash", s.requireAuth(http.HandlerFunc(s.handleListTrash)))
-	mux.Handle("POST /api/trash/delete", s.requireAuth(http.HandlerFunc(s.handleDeleteTrash)))
+	mux.Handle("GET /api/junk", s.requireAuth(http.HandlerFunc(s.handleListJunk)))
+	mux.Handle("POST /api/junk/delete", s.requireAuth(http.HandlerFunc(s.handleDeleteJunk)))
+
+	mux.Handle("GET /api/mailing-lists", s.requireAuth(http.HandlerFunc(s.handleListMailingLists)))
+	mux.Handle("POST /api/mailing-lists/unsubscribe", s.requireAuth(http.HandlerFunc(s.handleUnsubscribe)))
 
 	mux.Handle("GET /api/abuse/queue", s.requireAuth(http.HandlerFunc(s.handleListAbuseQueue)))
 	mux.Handle("POST /api/abuse/{id}/approve", s.requireAuth(http.HandlerFunc(s.handleApproveAbuse)))
 	mux.Handle("POST /api/abuse/{id}/dismiss", s.requireAuth(http.HandlerFunc(s.handleDismissAbuse)))
-	mux.Handle("POST /api/abuse/test-smtp", s.requireAuth(http.HandlerFunc(s.handleTestSMTP)))
+	mux.Handle("GET /api/abuse/history", s.requireAuth(http.HandlerFunc(s.handleAbuseHistory)))
 
 	mux.Handle("GET /api/events", s.requireAuth(s.hub))
 
@@ -369,9 +375,8 @@ func (s *Server) handleDailyStats(w http.ResponseWriter, r *http.Request) {
 
 type settingsResponse struct {
 	db.AppSettings
-	HasIMAPPassword      bool `json:"has_imap_password"`
-	HasAIAPIKey          bool `json:"has_ai_api_key"`
-	HasAbuseSMTPPassword bool `json:"has_abuse_smtp_password"`
+	HasIMAPPassword bool `json:"has_imap_password"`
+	HasAIAPIKey     bool `json:"has_ai_api_key"`
 }
 
 func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
@@ -381,14 +386,12 @@ func (s *Server) handleGetSettings(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	resp := settingsResponse{
-		AppSettings:          cfg,
-		HasIMAPPassword:      cfg.IMAPPassword != "",
-		HasAIAPIKey:          cfg.AIAPIKey != "",
-		HasAbuseSMTPPassword: cfg.AbuseSMTPPassword != "",
+		AppSettings:     cfg,
+		HasIMAPPassword: cfg.IMAPPassword != "",
+		HasAIAPIKey:     cfg.AIAPIKey != "",
 	}
 	resp.IMAPPassword = ""
 	resp.AIAPIKey = ""
-	resp.AbuseSMTPPassword = ""
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -401,7 +404,6 @@ func (s *Server) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 	incoming := current
 	incoming.IMAPPassword = ""
 	incoming.AIAPIKey = ""
-	incoming.AbuseSMTPPassword = ""
 	if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
@@ -692,8 +694,8 @@ func (s *Server) handleScanMatches(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"matches": matches})
 }
 
-func (s *Server) handleListTrash(w http.ResponseWriter, _ *http.Request) {
-	listing, err := imap.ListTrash(s.store)
+func (s *Server) handleListJunk(w http.ResponseWriter, _ *http.Request) {
+	listing, err := imap.ListJunk(s.store)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -701,7 +703,7 @@ func (s *Server) handleListTrash(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, listing)
 }
 
-func (s *Server) handleDeleteTrash(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDeleteJunk(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		UIDValidity uint32   `json:"uid_validity"`
 		UIDs        []uint32 `json:"uids"`
@@ -710,12 +712,61 @@ func (s *Server) handleDeleteTrash(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
-	deleted, err := imap.DeleteFromTrash(s.store, body.UIDValidity, body.UIDs)
+	deleted, err := imap.DeleteFromJunk(s.store, body.UIDValidity, body.UIDs)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": deleted})
+}
+
+func (s *Server) handleListMailingLists(w http.ResponseWriter, _ *http.Request) {
+	lists, err := s.store.ListLegitMailingLists()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lists": lists})
+}
+
+func (s *Server) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Sender string `json:"sender"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	list, err := s.store.GetLegitMailingList(body.Sender)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if list == nil {
+		writeError(w, http.StatusNotFound, "this sender is not an eligible mailing list")
+		return
+	}
+	unsubscribedAt, errMsg := "", ""
+	if err := s.unsubscriber.OneClick(r.Context(), list.UnsubscribeURL); err != nil {
+		errMsg = err.Error()
+	} else {
+		unsubscribedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := s.store.MarkMailingListResult(list.Sender, unsubscribedAt, errMsg); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	list.UnsubscribedAt, list.Error = unsubscribedAt, errMsg
+	writeJSON(w, http.StatusOK, list)
+}
+
+func (s *Server) handleAbuseHistory(w http.ResponseWriter, _ *http.Request) {
+	entries, err := s.store.ListAbuseHistory(50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
 }
 
 func (s *Server) handleListAbuseQueue(w http.ResponseWriter, _ *http.Request) {
@@ -740,12 +791,11 @@ func (s *Server) handleApproveAbuse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
-	entry, sendErr := s.abuseSvc.ApproveAndSend(r.Context(), id)
-	if sendErr != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": sendErr.Error()})
+	if err := s.abuseSvc.Approve(id); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": entry.Status, "error": ""})
+	writeJSON(w, http.StatusAccepted, map[string]any{"status": "sending"})
 }
 
 func (s *Server) handleDismissAbuse(w http.ResponseWriter, r *http.Request) {
@@ -763,22 +813,6 @@ func (s *Server) handleDismissAbuse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) handleTestSMTP(w http.ResponseWriter, r *http.Request) {
-	if s.abuseSvc == nil {
-		writeError(w, http.StatusServiceUnavailable, "abuse service unavailable")
-		return
-	}
-	var body struct {
-		ToEmail string `json:"to_email"`
-	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	if err := s.abuseSvc.SendTest(r.Context(), body.ToEmail); err != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "error": ""})
 }
 
 func hashString(s string) string {

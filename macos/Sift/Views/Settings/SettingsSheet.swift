@@ -20,8 +20,6 @@ struct SettingsSheet: View {
 
     @State private var imapPasswordInput = ""
     @State private var aiAPIKeyInput = ""
-    @State private var smtpPasswordInput = ""
-    @State private var testRecipient = ""
     @State private var newCategoryName = ""
     @State private var newCategoryDescription = ""
     @State private var newAllowlistPattern = ""
@@ -30,7 +28,6 @@ struct SettingsSheet: View {
     @State private var infoMessage: String?
     @State private var isTestingIMAP = false
     @State private var isTestingAI = false
-    @State private var isSendingTest = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -108,7 +105,6 @@ struct SettingsSheet: View {
         .frame(width: 720, height: 600)
         .onAppear {
             draftSettings = appState.settings
-            testRecipient = appState.settings.abuseFromEmail
             DispatchQueue.main.async {
                 isHydrated = true
             }
@@ -127,9 +123,6 @@ struct SettingsSheet: View {
             scheduleAutoSave(delayMs: 700)
         }
         .onChange(of: aiAPIKeyInput) { _, _ in
-            scheduleAutoSave(delayMs: 700)
-        }
-        .onChange(of: smtpPasswordInput) { _, _ in
             scheduleAutoSave(delayMs: 700)
         }
     }
@@ -223,9 +216,9 @@ struct SettingsSheet: View {
                 GroupBox("Spam Thresholds") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
-                            Text("Move to Trash at: \(Int(draftSettings.trashThreshold * 100))%")
+                            Text("Move to Junk at: \(Int(draftSettings.junkThreshold * 100))%")
                                 .frame(width: 210, alignment: .leading)
-                            Slider(value: $draftSettings.trashThreshold, in: 0.50...0.99, step: 0.01)
+                            Slider(value: $draftSettings.junkThreshold, in: 0.50...0.99, step: 0.01)
                         }
 
                         Divider()
@@ -241,8 +234,8 @@ struct SettingsSheet: View {
                         .opacity(draftSettings.deleteEnabled ? 1 : 0.45)
 
                         Text(draftSettings.deleteEnabled
-                             ? "Spam at or above the delete threshold skips the Trash. Everything else above the trash threshold goes to Trash."
-                             : "All detected spam goes to Trash, where you can review it before deleting.")
+                             ? "All spam moves to Junk, which trains iCloud's filter. Spam at or above the delete threshold is then deleted permanently."
+                             : "All detected spam moves to Junk, which trains iCloud's filter. Review it there before deleting.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -251,11 +244,11 @@ struct SettingsSheet: View {
 
                 GroupBox("Abuse Reporting") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Categories checked under Report above queue RDAP/WHOIS abuse reports with your address redacted from headers.")
+                        Text("High-confidence spam in categories checked under Report is queued for abuse reports. Reports go to the sender's network, registrar, email service, link hosts, and phishing clearinghouses, sent from your iCloud address with your address removed from the evidence.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                        Toggle("Require manual approval before sending (via top-right alert icon)", isOn: $draftSettings.abuseManualApproval)
+                        Toggle("Require approval before sending (top-right warning icon)", isOn: $draftSettings.abuseManualApproval)
 
                         HStack {
                             Text("Report confidence floor: \(Int(draftSettings.abuseMinConfidence * 100))%")
@@ -265,39 +258,6 @@ struct SettingsSheet: View {
 
                         Stepper("Repeat-domain cooldown: \(draftSettings.abuseCooldownDays) days", value: $draftSettings.abuseCooldownDays, in: 1...30)
 
-                        Divider()
-
-                        Picker("SMTP Mode", selection: $draftSettings.abuseSMTPMode) {
-                            Text("iCloud Mail Alias (smtp.mail.me.com)").tag("icloud_alias")
-                            Text("Custom SMTP").tag("custom")
-                        }
-                        .pickerStyle(.segmented)
-
-                        TextField("From Email / Alias", text: $draftSettings.abuseFromEmail, prompt: Text(verbatim: "From Email / Alias (e.g. abuse-alias@icloud.com)"))
-                            .textFieldStyle(.roundedBorder)
-
-                        if draftSettings.abuseSMTPMode == "custom" {
-                            HStack {
-                                TextField("SMTP Host", text: $draftSettings.abuseSMTPHost)
-                                    .textFieldStyle(.roundedBorder)
-                                TextField("Port", value: $draftSettings.abuseSMTPPort, format: .number)
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(width: 90)
-                            }
-                            TextField("SMTP Username", text: $draftSettings.abuseSMTPUsername)
-                                .textFieldStyle(.roundedBorder)
-                            SecureField(appState.settings.hasAbuseSMTPPassword == true ? "SMTP Password (saved)" : "SMTP Password", text: $smtpPasswordInput)
-                                .textFieldStyle(.roundedBorder)
-                        }
-
-                        HStack {
-                            TextField("Test recipient email", text: $testRecipient)
-                                .textFieldStyle(.roundedBorder)
-                            Button(isSendingTest ? "Sending..." : "Send Test Email") {
-                                Task { await sendTestEmail() }
-                            }
-                            .disabled(isSendingTest)
-                        }
                     }
                     .padding(8)
                 }
@@ -308,7 +268,7 @@ struct SettingsSheet: View {
 
     private var allowlistTab: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Senders and domains listed here bypass Jev and are never moved or deleted.")
+            Text("Senders and domains listed here bypass Jev and are never moved or deleted. Built-in brand entries apply only when the email passes DMARC, so phishing that fakes those brands is still caught. Remove any you want filtered.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
@@ -328,6 +288,13 @@ struct SettingsSheet: View {
                         Image(systemName: entry.kind == "email" ? "envelope" : "globe")
                             .foregroundStyle(.secondary)
                         Text(entry.pattern)
+                        if entry.builtin {
+                            Text("Built-in · needs DMARC")
+                                .font(.caption2)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.15), in: Capsule())
+                        }
                         Spacer()
                         Text(entry.kind)
                             .font(.caption)
@@ -490,33 +457,12 @@ struct SettingsSheet: View {
         payload.abuseEnabled = true
         if !imapPasswordInput.isEmpty { payload.imapPassword = imapPasswordInput }
         if !aiAPIKeyInput.isEmpty { payload.aiAPIKey = aiAPIKeyInput }
-        if !smtpPasswordInput.isEmpty { payload.abuseSMTPPassword = smtpPasswordInput }
         do {
             let updated = try await client.updateSettings(payload)
             appState.settings = updated
             errorMessage = nil
         } catch {
             errorMessage = "Failed to save settings: \(error.localizedDescription)"
-        }
-    }
-
-    private func sendTestEmail() async {
-        guard let client = appState.apiClient else { return }
-        isSendingTest = true
-        defer { isSendingTest = false }
-        autoSaveTask?.cancel()
-        autoSaveTask = nil
-        await persistSettings()
-        do {
-            let res = try await client.testAbuseSMTP(toEmail: testRecipient.trimmingCharacters(in: .whitespaces))
-            if res.ok {
-                errorMessage = nil
-                infoMessage = "Test email sent successfully."
-            } else {
-                errorMessage = "SMTP test failed: \(res.error)"
-            }
-        } catch {
-            errorMessage = "SMTP test failed: \(error.localizedDescription)"
         }
     }
 

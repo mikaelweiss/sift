@@ -52,6 +52,8 @@ func (e *slowEvaluator) EvaluateNoul(ctx context.Context, state any, questions m
 
 func (e *slowEvaluator) VerifyKey(context.Context) error { return nil }
 
+var testServerCaps = goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapIMAP4rev2: {}}
+
 func startIMAPServer(t *testing.T, inbox int) string {
 	t.Helper()
 	mem := imapmemserver.New()
@@ -61,7 +63,7 @@ func startIMAPServer(t *testing.T, inbox int) string {
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 			return mem.NewSession(), nil, nil
 		},
-		Caps:         goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapIMAP4rev2: {}},
+		Caps:         testServerCaps,
 		InsecureAuth: true,
 	})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -82,7 +84,7 @@ func startIMAPServer(t *testing.T, inbox int) string {
 	if err := c.Create("INBOX", nil).Wait(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"Archive", "Trash"} {
+	for _, name := range []string{"Archive", "Junk", "Trash"} {
 		if err := c.Create(name, nil).Wait(); err != nil {
 			t.Fatal(err)
 		}
@@ -121,7 +123,7 @@ type scanRun struct {
 	elapsed time.Duration
 }
 
-func runScan(t *testing.T, messages int, dryRun bool) scanRun {
+func runScan(t *testing.T, messages int, dryRun bool, configure ...func(*db.AppSettings)) scanRun {
 	t.Helper()
 	addr := startIMAPServer(t, messages)
 	dialScanClient = func(host string, port int, username, password string, _ *imapclient.Options) (*imapclient.Client, error) {
@@ -142,6 +144,9 @@ func runScan(t *testing.T, messages int, dryRun bool) scanRun {
 		t.Fatal(err)
 	}
 	cfg.IMAPUsername, cfg.IMAPPassword = "user", "pass"
+	for _, fn := range configure {
+		fn(&cfg)
+	}
 	if err := store.SaveSettings(cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -216,15 +221,15 @@ func TestScanDryRunClassifiesEveryMessageConcurrently(t *testing.T) {
 	}
 }
 
-func TestScanLiveMovesSpamToTrash(t *testing.T) {
+func TestScanLiveMovesSpamToJunk(t *testing.T) {
 	const messages = 400
 	run := runScan(t, messages, false)
 	job, addr := run.job, run.addr
 	if job.Status != "completed" {
 		t.Fatalf("status %q: %s", job.Status, job.ErrorMsg)
 	}
-	if got := mailboxCount(t, addr, "Trash"); got != messages/4 {
-		t.Fatalf("Trash has %d messages, want %d", got, messages/4)
+	if got := mailboxCount(t, addr, "Junk"); got != messages/4 {
+		t.Fatalf("Junk has %d messages, want %d", got, messages/4)
 	}
 	if got := mailboxCount(t, addr, "INBOX") + mailboxCount(t, addr, "Archive"); got != messages-messages/4 {
 		t.Fatalf("INBOX and Archive hold %d messages, want %d", got, messages-messages/4)
@@ -234,7 +239,7 @@ func TestScanLiveMovesSpamToTrash(t *testing.T) {
 	}
 }
 
-func TestTrashListsAndDeletesOnlySiftMail(t *testing.T) {
+func TestJunkListsAndDeletesOnlySiftMail(t *testing.T) {
 	const messages = 400
 	run := runScan(t, messages, false)
 	spam := messages / 4
@@ -247,8 +252,8 @@ func TestTrashListsAndDeletesOnlySiftMail(t *testing.T) {
 	if err := c.Login("user", "pass").Wait(); err != nil {
 		t.Fatal(err)
 	}
-	own := "From: Friend <friend@example.com>\r\nSubject: Trashed by hand\r\nMessage-ID: <own@example.com>\r\n\r\nHi\r\n"
-	appendCmd := c.Append("Trash", int64(len(own)), nil)
+	own := "From: Friend <friend@example.com>\r\nSubject: Filed as junk elsewhere\r\nMessage-ID: <own@example.com>\r\n\r\nHi\r\n"
+	appendCmd := c.Append("Junk", int64(len(own)), nil)
 	_, _ = appendCmd.Write([]byte(own))
 	_ = appendCmd.Close()
 	appended, err := appendCmd.Wait()
@@ -256,12 +261,12 @@ func TestTrashListsAndDeletesOnlySiftMail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	listing, err := ListTrash(run.store)
+	listing, err := ListJunk(run.store)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(listing.Items) != spam {
-		t.Fatalf("listed %d trash items, want the %d Sift trashed", len(listing.Items), spam)
+		t.Fatalf("listed %d junk items, want the %d Sift moved", len(listing.Items), spam)
 	}
 
 	var uids []uint32
@@ -269,21 +274,21 @@ func TestTrashListsAndDeletesOnlySiftMail(t *testing.T) {
 		uids = append(uids, item.UID)
 	}
 	uids = append(uids, uint32(appended.UID))
-	deleted, err := DeleteFromTrash(run.store, listing.UIDValidity, uids)
+	deleted, err := DeleteFromJunk(run.store, listing.UIDValidity, uids)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if deleted != 40 {
 		t.Fatalf("deleted %d, want 40", deleted)
 	}
-	if got := mailboxCount(t, run.addr, "Trash"); got != uint32(spam-40+1) {
-		t.Fatalf("Trash holds %d, want %d with the hand-trashed message kept", got, spam-40+1)
+	if got := mailboxCount(t, run.addr, "Junk"); got != uint32(spam-40+1) {
+		t.Fatalf("Junk holds %d, want %d with the other message kept", got, spam-40+1)
 	}
-	if listing, err = ListTrash(run.store); err != nil || len(listing.Items) != spam-40 {
+	if listing, err = ListJunk(run.store); err != nil || len(listing.Items) != spam-40 {
 		t.Fatalf("relisted %d items (err %v), want %d", len(listing.Items), err, spam-40)
 	}
 
-	if _, err := DeleteFromTrash(run.store, listing.UIDValidity+1, uids); err == nil {
+	if _, err := DeleteFromJunk(run.store, listing.UIDValidity+1, uids); err == nil {
 		t.Fatal("delete with a stale UIDVALIDITY succeeded")
 	}
 }
@@ -308,15 +313,47 @@ func TestApplyDryRunMovesSpamAndRecordsEveryVerdict(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if got := mailboxCount(t, run.addr, "Trash"); got != messages/4 {
-		t.Fatalf("Trash holds %d, want %d", got, messages/4)
+	if got := mailboxCount(t, run.addr, "Junk"); got != messages/4 {
+		t.Fatalf("Junk holds %d, want %d", got, messages/4)
 	}
 	pending, err := run.store.ListPendingScanResults(run.job.ID)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("%d results still pending (err %v)", len(pending), err)
 	}
-	trashed, err := run.store.ListTrashedEvents()
-	if err != nil || len(trashed) != messages/4 {
-		t.Fatalf("recorded %d trash events (err %v), want %d", len(trashed), err, messages/4)
+	junked, err := run.store.ListJunkedEvents()
+	if err != nil || len(junked) != messages/4 {
+		t.Fatalf("recorded %d junk events (err %v), want %d", len(junked), err, messages/4)
+	}
+}
+
+func TestPermanentDeleteGoesThroughJunkAndLeavesNoCopy(t *testing.T) {
+	const messages = 200
+	run := runScan(t, messages, false, func(cfg *db.AppSettings) { cfg.DeleteEnabled = true })
+	if run.job.Status != "completed" {
+		t.Fatalf("status %q: %s", run.job.Status, run.job.ErrorMsg)
+	}
+	if got := mailboxCount(t, run.addr, "Junk"); got != 0 {
+		t.Fatalf("Junk still holds %d deleted messages", got)
+	}
+	if got := mailboxCount(t, run.addr, "INBOX") + mailboxCount(t, run.addr, "Archive"); got != messages-messages/4 {
+		t.Fatalf("INBOX and Archive hold %d, want %d", got, messages-messages/4)
+	}
+}
+
+// iCloud advertises UIDPLUS but not MOVE, so moves fall back to COPY + STORE + UID EXPUNGE.
+func TestPermanentDeleteWorksWithoutMoveSupport(t *testing.T) {
+	testServerCaps = goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapUIDPlus: {}}
+	t.Cleanup(func() { testServerCaps = goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapIMAP4rev2: {}} })
+
+	const messages = 120
+	run := runScan(t, messages, false, func(cfg *db.AppSettings) { cfg.DeleteEnabled = true })
+	if run.job.Status != "completed" {
+		t.Fatalf("status %q: %s", run.job.Status, run.job.ErrorMsg)
+	}
+	if got := mailboxCount(t, run.addr, "Junk"); got != 0 {
+		t.Fatalf("Junk still holds %d deleted messages", got)
+	}
+	if got := mailboxCount(t, run.addr, "INBOX") + mailboxCount(t, run.addr, "Archive"); got != messages-messages/4 {
+		t.Fatalf("INBOX and Archive hold %d, want %d", got, messages-messages/4)
 	}
 }

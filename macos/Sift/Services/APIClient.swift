@@ -292,17 +292,31 @@ final class APIClient {
         return resp.matches
     }
 
-    func listTrash() async throws -> TrashListing {
-        try await send("GET", path: "/api/trash")
+    func listJunk() async throws -> JunkListing {
+        try await send("GET", path: "/api/junk")
     }
 
-    func deleteFromTrash(uidValidity: UInt32, uids: [UInt32]) async throws -> Int {
+    func deleteFromJunk(uidValidity: UInt32, uids: [UInt32]) async throws -> Int {
         struct Payload: Encodable {
             let uid_validity: UInt32
             let uids: [UInt32]
         }
-        let resp: TrashDeleteResponse = try await send("POST", path: "/api/trash/delete", body: Payload(uid_validity: uidValidity, uids: uids))
+        let resp: JunkDeleteResponse = try await send("POST", path: "/api/junk/delete", body: Payload(uid_validity: uidValidity, uids: uids))
         return resp.deleted
+    }
+
+    func listMailingLists() async throws -> [MailingList] {
+        let resp: MailingListsResponse = try await send("GET", path: "/api/mailing-lists")
+        return resp.lists
+    }
+
+    func unsubscribe(sender: String) async throws -> MailingList {
+        try await send("POST", path: "/api/mailing-lists/unsubscribe", body: ["sender": sender])
+    }
+
+    func abuseHistory() async throws -> [AbuseHistoryEntry] {
+        let resp: AbuseHistoryResponse = try await send("GET", path: "/api/abuse/history")
+        return resp.entries
     }
 
     func listAbuseQueue() async throws -> [AbuseQueueItem] {
@@ -310,16 +324,12 @@ final class APIClient {
         return resp.items
     }
 
-    func approveAbuse(id: Int64) async throws -> AbuseApproveResponse {
-        try await send("POST", path: "/api/abuse/\(id)/approve")
+    func approveAbuse(id: Int64) async throws {
+        _ = try await sendRaw("POST", path: "/api/abuse/\(id)/approve")
     }
 
     func dismissAbuse(id: Int64) async throws {
         _ = try await sendRaw("POST", path: "/api/abuse/\(id)/dismiss")
-    }
-
-    func testAbuseSMTP(toEmail: String) async throws -> ValidationResponse {
-        try await send("POST", path: "/api/abuse/test-smtp", body: ["to_email": toEmail])
     }
 }
 

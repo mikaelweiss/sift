@@ -3,7 +3,8 @@ import SwiftUI
 struct MainTabView: View {
     @Environment(AppState.self) private var appState
     @State private var showAbuseReview = false
-    @State private var showTrash = false
+    @State private var showJunk = false
+    @State private var showMailingLists = false
 
     var body: some View {
         @Bindable var bindableState = appState
@@ -59,15 +60,21 @@ struct MainTabView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .disabled(!hasQueuedDomains)
-                        .help(hasQueuedDomains ? "Review domains queued for abuse reporting" : "No domains queued for abuse reporting")
+                        .help(hasQueuedDomains ? "Review abuse reports waiting for approval" : "Abuse reports and sent history")
 
                         Button {
-                            showTrash = true
+                            showMailingLists = true
                         } label: {
-                            Image(systemName: "trash")
+                            Image(systemName: "envelope.open")
                         }
-                        .help("Review spam in Trash and delete it permanently")
+                        .help("Unsubscribe from legitimate mailing lists")
+
+                        Button {
+                            showJunk = true
+                        } label: {
+                            Image(systemName: "xmark.bin")
+                        }
+                        .help("Review spam in Junk and delete it permanently")
 
                         Button {
                             appState.showSettings = true
@@ -81,8 +88,12 @@ struct MainTabView: View {
                     AbuseReviewSheet()
                         .environment(appState)
                 }
-                .sheet(isPresented: $showTrash) {
-                    TrashSheet()
+                .sheet(isPresented: $showJunk) {
+                    JunkSheet()
+                        .environment(appState)
+                }
+                .sheet(isPresented: $showMailingLists) {
+                    MailingListsSheet()
                         .environment(appState)
                 }
                 .sheet(isPresented: $bindableState.showSettings) {

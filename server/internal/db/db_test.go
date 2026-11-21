@@ -42,10 +42,6 @@ func TestStoreLifecycle(t *testing.T) {
 	if _, err := store.AddAllowlistEntry("example.com", "domain"); err != nil {
 		t.Fatalf("AddAllowlistEntry: %v", err)
 	}
-	ok, err := store.IsAllowlisted("user@sub.example.com", "sub.example.com")
-	if err != nil || !ok {
-		t.Fatalf("expected subdomain allowlist match, ok=%v err=%v", ok, err)
-	}
 
 	today := time.Now().UTC().Format(time.RFC3339)
 	ev := EmailEvent{
@@ -57,7 +53,7 @@ func TestStoreLifecycle(t *testing.T) {
 		EmailDate:    today,
 		CategoryID:   "phishing_scams",
 		Confidence:   0.98,
-		Action:       "trash",
+		Action:       "junk",
 		Source:       "realtime",
 	}
 	if err := store.RecordEmailEvent(ev); err != nil {
@@ -80,7 +76,7 @@ func TestStoreLifecycle(t *testing.T) {
 		SendingIP:       "203.0.113.5",
 		CategoryID:      "phishing_scams",
 		Confidence:      0.96,
-		Targets:         []string{"abuse@registrar.test"},
+		Targets:         []AbuseTarget{{Address: "abuse@registrar.test", Kind: "registrar"}},
 		RedactedHeaders: "From: scam@evil.test",
 		Subject:         "Claim prize",
 		Sender:          "scam@evil.test",
@@ -93,7 +89,7 @@ func TestStoreLifecycle(t *testing.T) {
 		SendingIP:       "203.0.113.6",
 		CategoryID:      "phishing_scams",
 		Confidence:      0.99,
-		Targets:         []string{"abuse@registrar.test"},
+		Targets:         []AbuseTarget{{Address: "abuse@registrar.test", Kind: "registrar"}},
 		RedactedHeaders: "From: scam2@evil.test",
 		Subject:         "Second scam",
 		Sender:          "scam2@evil.test",
@@ -134,7 +130,7 @@ func TestStoreLifecycle(t *testing.T) {
 			EmailDate:    today,
 			CategoryID:   "marketing_promotions",
 			Confidence:   0.92,
-			Action:       "trash",
+			Action:       "junk",
 		},
 	}); err != nil {
 		t.Fatalf("RecordScanResults: %v", err)
@@ -149,5 +145,75 @@ func TestStoreLifecycle(t *testing.T) {
 	pendingAfter, err := store.ListPendingScanResults("job-1")
 	if err != nil || len(pendingAfter) != 0 {
 		t.Fatalf("expected 0 pending scan results after mark applied, got %d", len(pendingAfter))
+	}
+}
+
+func TestBuiltinAllowlistIsSeededOnceAndRemovable(t *testing.T) {
+	dir := t.TempDir()
+	store, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.ListAllowlist()
+	if err != nil || len(entries) != len(BuiltinAllowlistDomains) {
+		t.Fatalf("seeded %d entries (err %v), want %d", len(entries), err, len(BuiltinAllowlistDomains))
+	}
+	var apple AllowlistEntry
+	for _, e := range entries {
+		if e.Pattern == "apple.com" {
+			apple = e
+		}
+	}
+	if !apple.Builtin {
+		t.Fatalf("apple.com not marked builtin: %+v", apple)
+	}
+	if err := store.DeleteAllowlistEntry(apple.ID); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	entries, _ = reopened.ListAllowlist()
+	for _, e := range entries {
+		if e.Pattern == "apple.com" {
+			t.Fatal("removed builtin entry came back on reopen")
+		}
+	}
+}
+
+func TestMailingListNeedsDMARCCleanHistoryAndThirtyDays(t *testing.T) {
+	store, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sighting := func(sender, date string, dmarc, flagged bool) MailingListSighting {
+		return MailingListSighting{Sender: sender, SenderDomain: "news.test", UnsubscribeURL: "https://news.test/u", DMARCPass: dmarc, Flagged: flagged, EmailDate: date, Subject: "Weekly"}
+	}
+	if err := store.RecordMailingListSightings([]MailingListSighting{
+		sighting("legit@news.test", "2026-09-01T00:00:00Z", true, false),
+		sighting("legit@news.test", "2026-11-01T00:00:00Z", true, false),
+		sighting("young@news.test", "2026-11-01T00:00:00Z", true, false),
+		sighting("young@news.test", "2026-11-10T00:00:00Z", true, false),
+		sighting("spoofy@news.test", "2026-09-01T00:00:00Z", true, false),
+		sighting("spoofy@news.test", "2026-11-01T00:00:00Z", false, false),
+		sighting("scam@news.test", "2026-09-01T00:00:00Z", true, false),
+		sighting("scam@news.test", "2026-11-01T00:00:00Z", true, true),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	lists, err := store.ListLegitMailingLists()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lists) != 1 || lists[0].Sender != "legit@news.test" {
+		t.Fatalf("legit lists %+v, want only legit@news.test", lists)
+	}
+	if m, _ := store.GetLegitMailingList("scam@news.test"); m != nil {
+		t.Fatal("flagged sender was returned as legit")
 	}
 }

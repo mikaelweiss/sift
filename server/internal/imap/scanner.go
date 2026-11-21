@@ -360,7 +360,7 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	}
 	defer c.Close()
 
-	trashMailbox := discoverTrashMailbox(c)
+	boxes := discoverSpamMailboxes(c)
 	mailboxes := DiscoverMailboxes(c, true)
 
 	pool := <-poolReady
@@ -413,7 +413,7 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 		fetching.Wait()
 	}
 
-	err = s.dispatchAndFinish(ctx, c, plans, job, trashMailbox, requests, progress)
+	err = s.dispatchAndFinish(ctx, c, plans, job, boxes, requests, progress)
 	stopFetching()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -485,13 +485,13 @@ func planFolders(fetchers []*fetchConn, mailboxes []string, criteria *goimap.Sea
 	return plans, total
 }
 
-func (s *Scanner) dispatchAndFinish(ctx context.Context, c *imapclient.Client, plans []folderPlan, job db.ScanJob, trashMailbox string, requests chan<- *scanBatch, progress *scanProgress) error {
+func (s *Scanner) dispatchAndFinish(ctx context.Context, c *imapclient.Client, plans []folderPlan, job db.ScanJob, boxes spamMailboxes, requests chan<- *scanBatch, progress *scanProgress) error {
 	actions := &actionConn{c: c}
 	var inFlight []*scanBatch
 	for _, plan := range plans {
 		for start := 0; start < len(plan.uids); start += scanBatchSize {
 			if len(inFlight) >= scanWindow {
-				if err := s.finishBatch(ctx, actions, inFlight[0], job, trashMailbox, progress); err != nil {
+				if err := s.finishBatch(ctx, actions, inFlight[0], job, boxes, progress); err != nil {
 					return err
 				}
 				inFlight = inFlight[1:]
@@ -507,7 +507,7 @@ func (s *Scanner) dispatchAndFinish(ctx context.Context, c *imapclient.Client, p
 		}
 	}
 	for _, b := range inFlight {
-		if err := s.finishBatch(ctx, actions, b, job, trashMailbox, progress); err != nil {
+		if err := s.finishBatch(ctx, actions, b, job, boxes, progress); err != nil {
 			return err
 		}
 	}
@@ -556,11 +556,11 @@ func (s *Scanner) fetchBatch(ctx context.Context, f *fetchConn, b *scanBatch, dr
 				continue
 			}
 		}
-		raw := extractBodyBytes(msg, scanBodySection)
-		b.msgs = append(b.msgs, classifiedMsg{
-			uid:   msg.UID,
-			input: ParseRawMessage(b.uidValidity, uid, msg.InternalDate, raw),
-		})
+		input := ParseRawMessage(b.uidValidity, uid, msg.InternalDate, extractBodyBytes(msg, scanBodySection))
+		if !wAgeWithin7Days(input.EmailDate) {
+			input.RawMessage = ""
+		}
+		b.msgs = append(b.msgs, classifiedMsg{uid: msg.UID, input: input})
 	}
 	if alreadyProcessed > 0 {
 		progress.update(func(j *db.ScanJob) { j.ScannedMessages += alreadyProcessed })
@@ -590,7 +590,7 @@ func (s *Scanner) classify(ctx context.Context, t classifyTask, progress *scanPr
 	job := &progress.job
 	job.ScannedMessages++
 	dec := msg.decision
-	if msg.err == nil && (dec.Action == "trash" || dec.Action == "delete") {
+	if msg.err == nil && isSpamAction(dec.Action) {
 		job.SpamFound++
 		if job.Summary == nil {
 			job.Summary = map[string]int{}
@@ -627,7 +627,7 @@ func (a *actionConn) selectMailbox(mailbox string) error {
 	return nil
 }
 
-func (s *Scanner) finishBatch(ctx context.Context, actions *actionConn, b *scanBatch, job db.ScanJob, trashMailbox string, progress *scanProgress) error {
+func (s *Scanner) finishBatch(ctx context.Context, actions *actionConn, b *scanBatch, job db.ScanJob, boxes spamMailboxes, progress *scanProgress) error {
 	<-b.fetched
 	if b.err != nil {
 		return b.err
@@ -645,8 +645,9 @@ func (s *Scanner) finishBatch(ctx context.Context, actions *actionConn, b *scanB
 		if actions.uidValidity != b.uidValidity {
 			return fmt.Errorf("%s changed during the scan (UIDVALIDITY %d, was %d)", b.mailbox, actions.uidValidity, b.uidValidity)
 		}
-		s.applyBatch(ctx, actions.c, job.ID, b, trashMailbox)
+		s.applyBatch(ctx, actions.c, job.ID, b, boxes)
 	}
+	s.recordMailingLists(b)
 	s.persist(progress.update(func(j *db.ScanJob) {
 		j.CurrentMailbox = b.mailbox
 		if b.maxUID > 0 {
@@ -672,9 +673,9 @@ func (s *Scanner) recordDryRunBatch(jobID string, b *scanBatch) {
 }
 
 func scanResultRow(jobID string, b *scanBatch, r classifiedMsg, action string, applied bool) db.ScanResult {
-	rawHdr := ""
-	if (action == "trash" || action == "delete") && wAgeWithin7Days(r.input.EmailDate) {
-		rawHdr = r.input.RawHeaders
+	evidence := ""
+	if reportable(r.input, action) {
+		evidence = r.input.RawMessage
 	}
 	return db.ScanResult{
 		JobID:        jobID,
@@ -689,51 +690,33 @@ func scanResultRow(jobID string, b *scanBatch, r classifiedMsg, action string, a
 		CategoryID:   r.decision.CategoryID,
 		Confidence:   r.decision.Confidence,
 		Action:       action,
-		RawHeaders:   rawHdr,
+		RawMessage:   evidence,
 		Applied:      applied,
 	}
 }
 
-func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, jobID string, b *scanBatch, trashMailbox string) {
-	var trashUIDs, deleteUIDs []goimap.UID
+func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, jobID string, b *scanBatch, boxes spamMailboxes) {
+	uidsByAction := map[string][]goimap.UID{}
 	for _, r := range b.msgs {
 		if r.err != nil {
 			log.Printf("scan %s UID %d classify failed: %v", b.mailbox, r.uid, r.err)
 			continue
 		}
-		if r.decision.Action == "trash" && b.mailbox != trashMailbox {
-			trashUIDs = append(trashUIDs, r.uid)
-		} else if r.decision.Action == "delete" {
-			deleteUIDs = append(deleteUIDs, r.uid)
+		if isSpamAction(r.decision.Action) {
+			uidsByAction[r.decision.Action] = append(uidsByAction[r.decision.Action], r.uid)
 		}
 	}
-
-	trashFailed := false
-	if len(trashUIDs) > 0 {
-		if actErr := applySpamActionBatch(c, trashUIDs, "trash", trashMailbox); actErr != nil {
-			log.Printf("scan batch trash in %s failed: %v", b.mailbox, actErr)
-			trashFailed = true
-		}
-	}
-	deleteFailed := false
-	if len(deleteUIDs) > 0 {
-		if actErr := applySpamActionBatch(c, deleteUIDs, "delete", trashMailbox); actErr != nil {
-			log.Printf("scan batch delete in %s failed: %v", b.mailbox, actErr)
-			deleteFailed = true
-		}
-	}
+	failed := applySpamActions(c, uidsByAction, b.mailbox, boxes)
 
 	var events []db.EmailEvent
 	var results []db.ScanResult
-	var abuseCandidates []abuse.Candidate
+	var candidates []abuse.Candidate
 	for _, r := range b.msgs {
 		if r.err != nil {
 			continue
 		}
 		actionTaken := r.decision.Action
-		if actionTaken == "trash" && trashFailed && b.mailbox != trashMailbox {
-			actionTaken = "error"
-		} else if actionTaken == "delete" && deleteFailed {
+		if failed[actionTaken] {
 			actionTaken = "error"
 		}
 		events = append(events, db.EmailEvent{
@@ -751,16 +734,8 @@ func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, jobID st
 			Source:       "backfill",
 		})
 		results = append(results, scanResultRow(jobID, b, r, actionTaken, true))
-		if (actionTaken == "trash" || actionTaken == "delete") && wAgeWithin7Days(r.input.EmailDate) {
-			abuseCandidates = append(abuseCandidates, abuse.Candidate{
-				SenderEmail:  r.input.SenderEmail,
-				SenderDomain: r.input.SenderDomain,
-				Subject:      r.input.Subject,
-				RawHeaders:   r.input.RawHeaders,
-				CategoryID:   r.decision.CategoryID,
-				Confidence:   r.decision.Confidence,
-				EmailDate:    r.input.EmailDate,
-			})
+		if cand, ok := abuseCandidate(r.input, r.decision.CategoryID, r.decision.Confidence, actionTaken); ok {
+			candidates = append(candidates, cand)
 		}
 	}
 	if err := s.store.RecordEmailEvents(events); err != nil {
@@ -769,10 +744,42 @@ func (s *Scanner) applyBatch(ctx context.Context, c *imapclient.Client, jobID st
 	if err := s.store.RecordScanResults(results); err != nil {
 		log.Printf("scan %s record results failed: %v", b.mailbox, err)
 	}
-	if s.abuseSvc != nil {
-		for _, cand := range abuseCandidates {
-			_ = s.abuseSvc.Consider(ctx, cand)
+	s.considerAbuse(ctx, candidates)
+}
+
+// applySpamActions runs junk before delete and reports which actions failed.
+func applySpamActions(c *imapclient.Client, uidsByAction map[string][]goimap.UID, mailbox string, boxes spamMailboxes) map[string]bool {
+	failed := map[string]bool{}
+	for _, action := range []string{"junk", "delete"} {
+		if err := applySpamAction(c, uidsByAction[action], action, mailbox, boxes); err != nil {
+			log.Printf("%s in %s failed: %v", action, mailbox, err)
+			failed[action] = true
 		}
+	}
+	return failed
+}
+
+func (s *Scanner) considerAbuse(ctx context.Context, candidates []abuse.Candidate) {
+	if s.abuseSvc == nil {
+		return
+	}
+	for _, cand := range candidates {
+		_ = s.abuseSvc.Consider(ctx, cand)
+	}
+}
+
+func (s *Scanner) recordMailingLists(b *scanBatch) {
+	var sightings []db.MailingListSighting
+	for _, r := range b.msgs {
+		if r.err != nil {
+			continue
+		}
+		if sighting, ok := mailingListSighting(r.input, r.decision); ok {
+			sightings = append(sightings, sighting)
+		}
+	}
+	if err := s.store.RecordMailingListSightings(sightings); err != nil {
+		log.Printf("scan %s record mailing lists failed: %v", b.mailbox, err)
 	}
 }
 
@@ -804,7 +811,7 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 	}
 	defer c.Close()
 
-	trashMailbox := discoverTrashMailbox(c)
+	boxes := discoverSpamMailboxes(c)
 
 	// Group pending results by mailbox while preserving order.
 	var mailboxOrder []string
@@ -849,49 +856,26 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 			}
 			chunk := items[start:end]
 
-			var trashUIDs []goimap.UID
-			var deleteUIDs []goimap.UID
+			uidsByAction := map[string][]goimap.UID{}
 			for _, r := range chunk {
-				if r.UIDValidity != mbox.UIDValidity {
-					continue
-				}
-				if r.Action == "trash" && mailbox != trashMailbox {
-					trashUIDs = append(trashUIDs, goimap.UID(r.UID))
-				} else if r.Action == "delete" {
-					deleteUIDs = append(deleteUIDs, goimap.UID(r.UID))
+				if r.UIDValidity == mbox.UIDValidity && isSpamAction(r.Action) {
+					uidsByAction[r.Action] = append(uidsByAction[r.Action], goimap.UID(r.UID))
 				}
 			}
-
-			trashFailed := false
-			if len(trashUIDs) > 0 {
-				if actErr := applySpamActionBatch(c, trashUIDs, "trash", trashMailbox); actErr != nil {
-					log.Printf("apply batch trash in %s failed: %v", mailbox, actErr)
-					trashFailed = true
-				}
-			}
-			deleteFailed := false
-			if len(deleteUIDs) > 0 {
-				if actErr := applySpamActionBatch(c, deleteUIDs, "delete", trashMailbox); actErr != nil {
-					log.Printf("apply batch delete in %s failed: %v", mailbox, actErr)
-					deleteFailed = true
-				}
-			}
+			failed := applySpamActions(c, uidsByAction, mailbox, boxes)
 
 			var appliedIDs []int64
 			var events []db.EmailEvent
-			var abuseCandidates []abuse.Candidate
+			var candidates []abuse.Candidate
 			for _, r := range chunk {
-				actionTaken := r.Action
+				appliedIDs = append(appliedIDs, r.ID)
 				if r.UIDValidity != mbox.UIDValidity {
-					appliedIDs = append(appliedIDs, r.ID)
 					continue
 				}
-				if actionTaken == "trash" && trashFailed && mailbox != trashMailbox {
-					actionTaken = "error"
-				} else if actionTaken == "delete" && deleteFailed {
+				actionTaken := r.Action
+				if failed[actionTaken] {
 					actionTaken = "error"
 				}
-
 				events = append(events, db.EmailEvent{
 					Mailbox:      mailbox,
 					UIDValidity:  r.UIDValidity,
@@ -906,30 +890,17 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 					Action:       actionTaken,
 					Source:       "backfill",
 				})
-
-				if (actionTaken == "trash" || actionTaken == "delete") && r.RawHeaders != "" {
-					if parsedDate, dErr := time.Parse(time.RFC3339, r.EmailDate); dErr == nil && wAgeWithin7Days(parsedDate) {
-						abuseCandidates = append(abuseCandidates, abuse.Candidate{
-							SenderEmail:  r.Sender,
-							SenderDomain: r.SenderDomain,
-							Subject:      r.Subject,
-							RawHeaders:   r.RawHeaders,
-							CategoryID:   r.CategoryID,
-							Confidence:   r.Confidence,
-							EmailDate:    parsedDate,
-						})
+				if r.RawMessage != "" {
+					input := ParseRawMessage(r.UIDValidity, r.UID, time.Time{}, []byte(r.RawMessage))
+					if cand, ok := abuseCandidate(input, r.CategoryID, r.Confidence, actionTaken); ok {
+						candidates = append(candidates, cand)
 					}
 				}
-				appliedIDs = append(appliedIDs, r.ID)
 			}
 			if err := s.store.RecordEmailEvents(events); err != nil {
 				log.Printf("apply %s record events failed: %v", mailbox, err)
 			}
-			if s.abuseSvc != nil {
-				for _, cand := range abuseCandidates {
-					_ = s.abuseSvc.Consider(ctx, cand)
-				}
-			}
+			s.considerAbuse(ctx, candidates)
 			_ = s.store.MarkScanResultsApplied(appliedIDs)
 		}
 	}

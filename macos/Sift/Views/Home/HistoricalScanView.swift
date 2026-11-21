@@ -245,12 +245,12 @@ struct HistoricalScanView: View {
     private func applyButtonTitle(spamCount: Int) -> String {
         let deletes = matches.filter { $0.action == "delete" }.count
         guard deletes > 0, matches.count == spamCount else {
-            return "Apply: Move \(spamCount) to Trash"
+            return "Apply: Move \(spamCount) to Junk"
         }
         if deletes == spamCount {
             return "Apply: Delete \(spamCount) Permanently"
         }
-        return "Apply: Trash \(spamCount - deletes), Delete \(deletes)"
+        return "Apply: Junk \(spamCount - deletes), Delete \(deletes)"
     }
 
     private func applyScan(_ id: String) async {

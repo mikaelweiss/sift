@@ -136,11 +136,11 @@ func (w *Watcher) runSession(ctx context.Context, cfg db.AppSettings) error {
 	}
 	defer c.Close()
 
-	trashMailbox := discoverTrashMailbox(c)
+	boxes := discoverSpamMailboxes(c)
 	watchMailboxes := DiscoverMailboxes(c, false)
 	w.setStatus(true, "")
 
-	if err := w.sweepMailboxes(ctx, c, watchMailboxes, trashMailbox); err != nil {
+	if err := w.sweepMailboxes(ctx, c, watchMailboxes, boxes); err != nil {
 		return err
 	}
 
@@ -193,14 +193,14 @@ func (w *Watcher) runSession(ctx context.Context, cfg db.AppSettings) error {
 		}
 		if shouldSweep {
 			watchMailboxes = DiscoverMailboxes(c, false)
-			if err := w.sweepMailboxes(ctx, c, watchMailboxes, trashMailbox); err != nil {
+			if err := w.sweepMailboxes(ctx, c, watchMailboxes, boxes); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (w *Watcher) sweepMailboxes(ctx context.Context, c *imapclient.Client, mailboxes []string, trashMailbox string) error {
+func (w *Watcher) sweepMailboxes(ctx context.Context, c *imapclient.Client, mailboxes []string, boxes spamMailboxes) error {
 	for _, mailbox := range mailboxes {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -210,14 +210,14 @@ func (w *Watcher) sweepMailboxes(ctx context.Context, c *imapclient.Client, mail
 			log.Printf("select %q skipped: %v", mailbox, err)
 			continue
 		}
-		if err := w.processNewMessages(ctx, c, mailbox, mbox.UIDValidity, trashMailbox); err != nil {
+		if err := w.processNewMessages(ctx, c, mailbox, mbox.UIDValidity, boxes); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, mailbox string, uidValidity uint32, trashMailbox string) error {
+func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, mailbox string, uidValidity uint32, boxes spamMailboxes) error {
 	storedValidity, lastUID, err := w.store.GetMailboxCursor(mailbox)
 	if err != nil {
 		return err
@@ -291,8 +291,8 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		}
 
 		actionTaken := decision.Action
-		if decision.Action == "trash" || decision.Action == "delete" {
-			if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
+		if decision.Action == "junk" || decision.Action == "delete" {
+			if actErr := applySpamAction(c, []goimap.UID{msg.UID}, decision.Action, mailbox, boxes); actErr != nil {
 				log.Printf("apply %s to %s UID %d failed: %v", decision.Action, mailbox, uid, actErr)
 				actionTaken = "error"
 			}
@@ -316,16 +316,11 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 			w.OnEventProcessed(ev)
 		}
 
-		if (actionTaken == "trash" || actionTaken == "delete") && w.abuseSvc != nil {
-			_ = w.abuseSvc.Consider(ctx, abuse.Candidate{
-				SenderEmail:  input.SenderEmail,
-				SenderDomain: input.SenderDomain,
-				Subject:      input.Subject,
-				RawHeaders:   input.RawHeaders,
-				CategoryID:   decision.CategoryID,
-				Confidence:   decision.Confidence,
-				EmailDate:    input.EmailDate,
-			})
+		if sighting, ok := mailingListSighting(input, decision); ok {
+			_ = w.store.RecordMailingListSightings([]db.MailingListSighting{sighting})
+		}
+		if cand, ok := abuseCandidate(input, decision.CategoryID, decision.Confidence, actionTaken); ok && w.abuseSvc != nil {
+			_ = w.abuseSvc.Consider(ctx, cand)
 		}
 	}
 
@@ -373,70 +368,12 @@ func TestConnection(host string, port int, username, password string) error {
 	return nil
 }
 
-func discoverTrashMailbox(c *imapclient.Client) string {
-	mailboxes, err := c.List("", "*", nil).Collect()
-	if err == nil {
-		for _, m := range mailboxes {
-			for _, attr := range m.Attrs {
-				if attr == goimap.MailboxAttrTrash {
-					return m.Mailbox
-				}
-			}
-		}
-		for _, m := range mailboxes {
-			lower := strings.ToLower(m.Mailbox)
-			if lower == "deleted messages" || lower == "trash" {
-				return m.Mailbox
-			}
-		}
-	}
-	return "Deleted Messages"
-}
-
 func extractBodyBytes(msg *imapclient.FetchMessageBuffer, section *goimap.FetchItemBodySection) []byte {
 	if raw := msg.FindBodySection(section); len(raw) > 0 {
 		return raw
 	}
 	if len(msg.BodySection) > 0 {
 		return msg.BodySection[0].Bytes
-	}
-	return nil
-}
-
-func applySpamAction(c *imapclient.Client, uid goimap.UID, action, trashMailbox string) error {
-	return applySpamActionBatch(c, []goimap.UID{uid}, action, trashMailbox)
-}
-
-func applySpamActionBatch(c *imapclient.Client, uids []goimap.UID, action, trashMailbox string) error {
-	if len(uids) == 0 {
-		return nil
-	}
-	var uidSet goimap.UIDSet
-	for _, u := range uids {
-		uidSet.AddNum(u)
-	}
-
-	if action == "trash" {
-		if _, err := c.Move(uidSet, trashMailbox).Wait(); err == nil {
-			return nil
-		}
-		if _, err := c.Copy(uidSet, trashMailbox).Wait(); err != nil {
-			return fmt.Errorf("copy to %s: %w", trashMailbox, err)
-		}
-	}
-
-	storeCmd := c.Store(uidSet, &goimap.StoreFlags{
-		Op:     goimap.StoreFlagsAdd,
-		Silent: true,
-		Flags:  []goimap.Flag{goimap.FlagDeleted},
-	}, nil)
-	if err := storeCmd.Close(); err != nil {
-		return fmt.Errorf("mark deleted: %w", err)
-	}
-	if err := c.UIDExpunge(uidSet).Close(); err != nil {
-		if expErr := c.Expunge().Close(); expErr != nil {
-			return fmt.Errorf("expunge: %w", expErr)
-		}
 	}
 	return nil
 }

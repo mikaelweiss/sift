@@ -31,6 +31,10 @@ type EmailInput struct {
 	BodySnippet  string
 	EmailDate    time.Time
 	RawHeaders   string
+	// RawMessage is the fetched message prefix kept as report evidence.
+	RawMessage     string
+	DMARCPass      bool
+	UnsubscribeURL string
 }
 
 type Decision struct {
@@ -39,7 +43,9 @@ type Decision struct {
 	CategoryName string
 	Confidence   float64
 	Allowlisted  bool
-	Scores       map[string]float64
+	// AbuseEligible marks the top category as one that warrants abuse reports.
+	AbuseEligible bool
+	Scores        map[string]float64
 }
 
 type Engine struct {
@@ -128,7 +134,7 @@ func (s *Snapshot) Evaluate(ctx context.Context, in EmailInput) (Decision, error
 		}
 	}
 
-	if s.isAllowlisted(senderEmail, senderDomain) || s.isOwnAddress(senderEmail) {
+	if s.isAllowlisted(senderEmail, senderDomain, in.DMARCPass) || s.isOwnAddress(senderEmail) {
 		return Decision{Action: "keep", Allowlisted: true}, nil
 	}
 	if len(s.questions) == 0 || s.eval == nil {
@@ -172,18 +178,19 @@ func (s *Snapshot) Evaluate(ctx context.Context, in EmailInput) (Decision, error
 	}
 	if c, ok := s.catByID[topID]; ok {
 		dec.CategoryName = c.Name
+		dec.AbuseEligible = c.AbuseEligible
 	}
 
-	trashThreshold := s.cfg.TrashThreshold
-	if trashThreshold <= 0 {
-		trashThreshold = 0.85
+	junkThreshold := s.cfg.JunkThreshold
+	if junkThreshold <= 0 {
+		junkThreshold = 0.85
 	}
 	deleteThreshold := s.cfg.DeleteThreshold
 	if deleteThreshold <= 0 {
 		deleteThreshold = 0.95
 	}
-	if topScore >= trashThreshold {
-		dec.Action = "trash"
+	if topScore >= junkThreshold {
+		dec.Action = "junk"
 	}
 	if s.cfg.DeleteEnabled && topScore >= deleteThreshold {
 		dec.Action = "delete"
@@ -192,12 +199,13 @@ func (s *Snapshot) Evaluate(ctx context.Context, in EmailInput) (Decision, error
 	return dec, nil
 }
 
-func (s *Snapshot) isAllowlisted(senderEmail, senderDomain string) bool {
+// isAllowlisted skips builtin brand entries unless the message passed DMARC, since phishing forges those brands.
+func (s *Snapshot) isAllowlisted(senderEmail, senderDomain string, dmarcPass bool) bool {
 	email := strings.ToLower(strings.TrimSpace(senderEmail))
 	domain := strings.ToLower(strings.TrimSpace(senderDomain))
 	for _, entry := range s.allowlist {
 		pat := strings.ToLower(strings.TrimSpace(entry.Pattern))
-		if pat == "" {
+		if pat == "" || (entry.Builtin && !dmarcPass) {
 			continue
 		}
 		if entry.Kind == "email" && email == pat {

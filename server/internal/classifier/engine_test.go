@@ -45,19 +45,19 @@ func TestClassifierAllowlistAndThresholds(t *testing.T) {
 		t.Fatalf("expected allowlist bypass without calling Jev, got %+v calls=%d", dec, stub.called)
 	}
 
-	// Default mode is trash with 0.85 threshold -> 0.90 should trash.
+	// Default junk threshold is 0.85 -> 0.90 goes to Junk.
 	dec, err = engine.Evaluate(context.Background(), EmailInput{
 		From:    "Scammer <bad@evil.test>",
 		Subject: "Verify your account",
 	})
 	if err != nil {
-		t.Fatalf("trash eval: %v", err)
+		t.Fatalf("junk eval: %v", err)
 	}
-	if dec.Action != "trash" || dec.CategoryID != "phishing_scams" {
-		t.Fatalf("expected trash phishing_scams, got %+v", dec)
+	if dec.Action != "junk" || dec.CategoryID != "phishing_scams" {
+		t.Fatalf("expected junk phishing_scams, got %+v", dec)
 	}
 
-	// Permanent delete on (0.95 threshold) -> 0.90 still trashes.
+	// Permanent delete on (0.95 threshold) -> 0.90 still goes to Junk.
 	cfg, _ := store.GetSettings()
 	cfg.DeleteEnabled = true
 	_ = store.SaveSettings(cfg)
@@ -69,8 +69,8 @@ func TestClassifierAllowlistAndThresholds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delete borderline eval: %v", err)
 	}
-	if dec.Action != "trash" {
-		t.Fatalf("expected 0.90 trashed below the delete threshold, got %+v", dec)
+	if dec.Action != "junk" {
+		t.Fatalf("expected 0.90 junked below the delete threshold, got %+v", dec)
 	}
 
 	stub.scores["phishing_scams"] = 0.97
@@ -118,5 +118,31 @@ func TestClassifierKeepsMailFromOwnAddress(t *testing.T) {
 	}
 	if dec.Action != "keep" || stub.called != 0 {
 		t.Fatalf("own sent mail was classified: %+v, Jev calls %d", dec, stub.called)
+	}
+}
+
+func TestBuiltinAllowlistRequiresDMARC(t *testing.T) {
+	store, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	stub := &stubEvaluator{scores: map[string]float64{"phishing_scams": 0.97}}
+	engine := NewEngine(store, stub)
+
+	genuine, err := engine.Evaluate(context.Background(), EmailInput{From: "Apple <no_reply@email.apple.com>", Subject: "Your repair request is pending.", DMARCPass: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !genuine.Allowlisted || genuine.Action != "keep" {
+		t.Fatalf("DMARC-passing apple.com mail was not allowlisted: %+v", genuine)
+	}
+
+	forged, err := engine.Evaluate(context.Background(), EmailInput{From: "Apple <no_reply@email.apple.com>", Subject: "Verify your Apple ID"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forged.Allowlisted || forged.Action != "junk" {
+		t.Fatalf("apple.com mail without DMARC skipped classification: %+v", forged)
 	}
 }

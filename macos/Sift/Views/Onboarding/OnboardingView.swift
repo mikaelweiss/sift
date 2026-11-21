@@ -402,7 +402,7 @@ struct OnboardingView: View {
 
             GroupBox("Spam Action") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Spam at 85% confidence or higher moves to Trash.")
+                    Text("Spam at 85% confidence or higher moves to Junk.")
                     Toggle("Also permanently delete spam at 95% or higher", isOn: $permanentDeleteOn)
                     Text("You can adjust confidence thresholds and add allowlist rules anytime in Settings.")
                         .font(.caption)

@@ -46,6 +46,47 @@ func TestParseRawMessageMultipartHTMLAndHeaders(t *testing.T) {
 	}
 }
 
+func TestParseRawMessageTrustsOnlyTheFirstICloudDMARCVerdict(t *testing.T) {
+	msg := func(authResults ...string) []byte {
+		var lines []string
+		for _, ar := range authResults {
+			lines = append(lines, "Authentication-Results: "+ar)
+		}
+		lines = append(lines,
+			"From: Apple <no_reply@email.apple.com>",
+			"List-Unsubscribe: <mailto:unsub@email.apple.com>, <https://email.apple.com/unsub?id=1>",
+			"List-Unsubscribe-Post: List-Unsubscribe=One-Click",
+			"Subject: Hi", "", "Body")
+		return []byte(strings.Join(lines, "\r\n"))
+	}
+
+	pass := ParseRawMessage(1, 1, time.Time{}, msg("dmarc.icloud.com; dmarc=pass header.from=email.apple.com"))
+	if !pass.DMARCPass {
+		t.Fatal("iCloud DMARC pass not recognized")
+	}
+	if pass.UnsubscribeURL != "https://email.apple.com/unsub?id=1" {
+		t.Fatalf("unsubscribe URL %q", pass.UnsubscribeURL)
+	}
+
+	forged := ParseRawMessage(1, 1, time.Time{}, msg(
+		"dmarc.icloud.com; dmarc=fail header.from=email.apple.com",
+		"dmarc.icloud.com; dmarc=pass header.from=email.apple.com",
+	))
+	if forged.DMARCPass {
+		t.Fatal("a later forged pass overrode iCloud's fail")
+	}
+
+	foreign := ParseRawMessage(1, 1, time.Time{}, msg("mx.evil.test; dmarc=pass header.from=email.apple.com"))
+	if foreign.DMARCPass {
+		t.Fatal("trusted a verdict from a non-iCloud authserv-id")
+	}
+
+	other := ParseRawMessage(1, 1, time.Time{}, msg("dmarc.icloud.com; dmarc=pass header.from=evil.test"))
+	if other.DMARCPass {
+		t.Fatal("DMARC pass for another domain counted for the sender")
+	}
+}
+
 func TestBuildSearchCriteria(t *testing.T) {
 	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
 	c30 := buildSearchCriteria("30d", now)

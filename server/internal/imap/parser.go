@@ -18,7 +18,12 @@ import (
 var (
 	htmlTagRegex    = regexp.MustCompile(`<[^>]+>`)
 	whitespaceRegex = regexp.MustCompile(`\s+`)
+	dmarcRegex      = regexp.MustCompile(`dmarc=([a-z]+)[^;]*?header\.from=([a-z0-9.-]+)`)
+	angleURLRegex   = regexp.MustCompile(`<([^>]+)>`)
 )
+
+// trustedAuthServ lists the authserv-ids iCloud stamps on inbound mail.
+var trustedAuthServ = []string{"icloud.com", "me.com"}
 
 func ParseRawMessage(uidValidity, uid uint32, internalDate time.Time, raw []byte) classifier.EmailInput {
 	headerBytes, _ := splitRawHeaderBody(raw)
@@ -34,6 +39,7 @@ func ParseRawMessage(uidValidity, uid uint32, internalDate time.Time, raw []byte
 	}
 
 	from := decodeHeader(msg.Header.Get("From"))
+	unsubscribeURL := oneClickUnsubscribeURL(msg.Header.Get("List-Unsubscribe"), msg.Header.Get("List-Unsubscribe-Post"))
 	replyTo := decodeHeader(msg.Header.Get("Reply-To"))
 	subject := decodeHeader(msg.Header.Get("Subject"))
 	messageID := strings.TrimSpace(msg.Header.Get("Message-ID"))
@@ -49,20 +55,72 @@ func ParseRawMessage(uidValidity, uid uint32, internalDate time.Time, raw []byte
 	linkDomains := classifier.ExtractLinkDomains(rawForLinks + "\n" + bodyText)
 
 	return classifier.EmailInput{
-		UIDValidity:  uidValidity,
-		UID:          uid,
-		MessageID:    messageID,
-		From:         from,
-		ReplyTo:      replyTo,
-		SenderEmail:  senderEmail,
-		SenderDomain: senderDomain,
-		Subject:      subject,
-		AuthResults:  authResults,
-		LinkDomains:  linkDomains,
-		BodySnippet:  truncateText(bodyText, 2500),
-		EmailDate:    emailDate,
-		RawHeaders:   string(headerBytes),
+		UIDValidity:    uidValidity,
+		UID:            uid,
+		RawMessage:     string(raw),
+		DMARCPass:      dmarcPassFor(msg.Header["Authentication-Results"], senderDomain),
+		UnsubscribeURL: unsubscribeURL,
+		MessageID:      messageID,
+		From:           from,
+		ReplyTo:        replyTo,
+		SenderEmail:    senderEmail,
+		SenderDomain:   senderDomain,
+		Subject:        subject,
+		AuthResults:    authResults,
+		LinkDomains:    linkDomains,
+		BodySnippet:    truncateText(bodyText, 2500),
+		EmailDate:      emailDate,
+		RawHeaders:     string(headerBytes),
 	}
+}
+
+// dmarcPassFor reads the first DMARC verdict stamped by iCloud. iCloud evaluates every inbound message
+// and its headers sit above the sender's own, so a forged verdict inside the message always comes later.
+func dmarcPassFor(authResults []string, senderDomain string) bool {
+	domain := strings.ToLower(strings.TrimSpace(senderDomain))
+	if domain == "" {
+		return false
+	}
+	for _, h := range authResults {
+		authserv, rest, ok := strings.Cut(strings.ToLower(h), ";")
+		if !ok || !isTrustedAuthServ(strings.TrimSpace(authserv)) {
+			continue
+		}
+		m := dmarcRegex.FindStringSubmatch(rest)
+		if m == nil {
+			continue
+		}
+		return m[1] == "pass" && m[2] == domain
+	}
+	return false
+}
+
+func isTrustedAuthServ(authserv string) bool {
+	fields := strings.Fields(authserv)
+	if len(fields) == 0 {
+		return false
+	}
+	id := fields[0]
+	for _, trusted := range trustedAuthServ {
+		if id == trusted || strings.HasSuffix(id, "."+trusted) {
+			return true
+		}
+	}
+	return false
+}
+
+// oneClickUnsubscribeURL returns the RFC 8058 HTTPS endpoint, or "" when the sender does not offer one-click unsubscribe.
+func oneClickUnsubscribeURL(listUnsubscribe, listUnsubscribePost string) string {
+	if !strings.Contains(strings.ToLower(listUnsubscribePost), "list-unsubscribe=one-click") {
+		return ""
+	}
+	for _, m := range angleURLRegex.FindAllStringSubmatch(listUnsubscribe, -1) {
+		candidate := strings.TrimSpace(m[1])
+		if strings.HasPrefix(strings.ToLower(candidate), "https://") {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func splitRawHeaderBody(raw []byte) (headers, body []byte) {

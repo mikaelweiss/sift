@@ -32,6 +32,7 @@ type Resolver struct {
 	httpClient *http.Client
 	rdapBase   string
 	whoisDial  func(ctx context.Context, server, query string) (string, error)
+	lookupIP   func(ctx context.Context, host string) ([]net.IPAddr, error)
 }
 
 func NewResolver(store *db.Store) *Resolver {
@@ -40,43 +41,8 @@ func NewResolver(store *db.Store) *Resolver {
 		httpClient: &http.Client{Timeout: 8 * time.Second},
 		rdapBase:   defaultRDAPBase,
 		whoisDial:  queryWHOISServer,
+		lookupIP:   defaultLookupIP,
 	}
-}
-
-func (r *Resolver) ResolveContacts(ctx context.Context, sendingIP, rootDomain string) ([]string, error) {
-	seen := make(map[string]struct{})
-	var contacts []string
-	add := func(list []string) {
-		for _, c := range list {
-			clean := strings.ToLower(strings.TrimSpace(c))
-			if !isValidEmail(clean) {
-				continue
-			}
-			if _, ok := seen[clean]; ok {
-				continue
-			}
-			seen[clean] = struct{}{}
-			contacts = append(contacts, clean)
-		}
-	}
-
-	if sendingIP != "" {
-		if ipContacts, err := r.lookupCached(ctx, "ip:"+sendingIP, func() ([]string, error) {
-			return r.lookupTarget(ctx, "ip", sendingIP)
-		}); err == nil {
-			add(ipContacts)
-		}
-	}
-
-	if rootDomain != "" && !IsSharedMailProvider(rootDomain) {
-		if domContacts, err := r.lookupCached(ctx, "domain:"+rootDomain, func() ([]string, error) {
-			return r.lookupTarget(ctx, "domain", rootDomain)
-		}); err == nil {
-			add(domContacts)
-		}
-	}
-
-	return contacts, nil
 }
 
 func (r *Resolver) lookupCached(ctx context.Context, key string, fn func() ([]string, error)) ([]string, error) {
