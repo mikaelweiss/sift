@@ -128,7 +128,7 @@ func (s *Snapshot) Evaluate(ctx context.Context, in EmailInput) (Decision, error
 		}
 	}
 
-	if s.isAllowlisted(senderEmail, senderDomain) {
+	if s.isAllowlisted(senderEmail, senderDomain) || s.isOwnAddress(senderEmail) {
 		return Decision{Action: "keep", Allowlisted: true}, nil
 	}
 	if len(s.questions) == 0 || s.eval == nil {
@@ -208,6 +208,12 @@ func (s *Snapshot) isAllowlisted(senderEmail, senderDomain string) bool {
 		}
 	}
 	return false
+}
+
+// isOwnAddress catches copies of mail the user sent, which land in Sent or Archive.
+func (s *Snapshot) isOwnAddress(senderEmail string) bool {
+	own := strings.ToLower(strings.TrimSpace(s.cfg.IMAPUsername))
+	return own != "" && strings.EqualFold(strings.TrimSpace(senderEmail), own)
 }
 
 func ParseSenderAddress(fromHeader string) (email, domain string) {

@@ -96,3 +96,27 @@ func TestExtractLinkDomainsAndSender(t *testing.T) {
 		t.Fatalf("unexpected domains: %+v", domains)
 	}
 }
+
+func TestClassifierKeepsMailFromOwnAddress(t *testing.T) {
+	store, err := db.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg, _ := store.GetSettings()
+	cfg.IMAPUsername = "me@icloud.com"
+	if err := store.SaveSettings(cfg); err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubEvaluator{scores: map[string]float64{"cold_sales": 0.99}}
+	dec, err := NewEngine(store, stub).Evaluate(context.Background(), EmailInput{
+		From:    "Me <Me@iCloud.com>",
+		Subject: "Paid partnership",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Action != "keep" || stub.called != 0 {
+		t.Fatalf("own sent mail was classified: %+v, Jev calls %d", dec, stub.called)
+	}
+}

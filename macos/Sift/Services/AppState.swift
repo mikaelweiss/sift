@@ -51,7 +51,7 @@ final class AppState {
         do {
             try KeychainStore.save(conn)
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
         connection = conn
         await refreshAll()
@@ -83,6 +83,7 @@ final class AppState {
             isConnected = true
             errorMessage = nil
         } catch {
+            guard !Self.isCancellation(error) else { return }
             isConnected = false
             errorMessage = error.localizedDescription
         }
@@ -96,7 +97,7 @@ final class AppState {
             stats = resp.stats
             totalBlocked = resp.totalBlocked
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -201,7 +202,7 @@ final class AppState {
             incomingPairRequest = nil
             devices = try await client.listDevices()
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
     }
 
@@ -230,8 +231,19 @@ final class AppState {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             await reconnect()
         } catch {
-            errorMessage = error.localizedDescription
+            report(error)
         }
+    }
+
+    // SwiftUI cancels a view's task when its id changes, which cancels any request it is awaiting.
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        return (error as? URLError)?.code == .cancelled
+    }
+
+    private func report(_ error: Error) {
+        guard !Self.isCancellation(error) else { return }
+        errorMessage = error.localizedDescription
     }
 
     func signOut() async {

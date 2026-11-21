@@ -19,11 +19,11 @@ import (
 )
 
 const (
-	scanBatchSize    = 50
-	scanConcurrency  = jev.MaxConcurrentRequests
-	scanFetchConns   = 8
-	scanWindow       = 2 * scanFetchConns
-	maxFetchBytes    = 65536
+	scanBatchSize   = 50
+	scanConcurrency = jev.MaxConcurrentRequests
+	scanFetchConns  = 8
+	scanWindow      = 2 * scanFetchConns
+	maxFetchBytes   = 65536
 )
 
 var dialScanClient = dialAndLogin
@@ -816,7 +816,7 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 		byMailbox[r.Mailbox] = append(byMailbox[r.Mailbox], r)
 	}
 
-	const applyChunkSize = 100
+	const applyChunkSize = 500
 	for _, mailbox := range mailboxOrder {
 		if ctx.Err() != nil {
 			job.Status = "cancelled"
@@ -878,6 +878,8 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 			}
 
 			var appliedIDs []int64
+			var events []db.EmailEvent
+			var abuseCandidates []abuse.Candidate
 			for _, r := range chunk {
 				actionTaken := r.Action
 				if r.UIDValidity != mbox.UIDValidity {
@@ -890,7 +892,7 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 					actionTaken = "error"
 				}
 
-				_ = s.store.RecordEmailEvent(db.EmailEvent{
+				events = append(events, db.EmailEvent{
 					Mailbox:      mailbox,
 					UIDValidity:  r.UIDValidity,
 					UID:          r.UID,
@@ -905,9 +907,9 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 					Source:       "backfill",
 				})
 
-				if (actionTaken == "trash" || actionTaken == "delete") && r.RawHeaders != "" && s.abuseSvc != nil {
+				if (actionTaken == "trash" || actionTaken == "delete") && r.RawHeaders != "" {
 					if parsedDate, dErr := time.Parse(time.RFC3339, r.EmailDate); dErr == nil && wAgeWithin7Days(parsedDate) {
-						_ = s.abuseSvc.Consider(ctx, abuse.Candidate{
+						abuseCandidates = append(abuseCandidates, abuse.Candidate{
 							SenderEmail:  r.Sender,
 							SenderDomain: r.SenderDomain,
 							Subject:      r.Subject,
@@ -919,6 +921,14 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 					}
 				}
 				appliedIDs = append(appliedIDs, r.ID)
+			}
+			if err := s.store.RecordEmailEvents(events); err != nil {
+				log.Printf("apply %s record events failed: %v", mailbox, err)
+			}
+			if s.abuseSvc != nil {
+				for _, cand := range abuseCandidates {
+					_ = s.abuseSvc.Consider(ctx, cand)
+				}
 			}
 			_ = s.store.MarkScanResultsApplied(appliedIDs)
 		}

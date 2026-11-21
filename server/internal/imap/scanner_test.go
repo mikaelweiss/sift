@@ -117,6 +117,7 @@ type scanRun struct {
 	eval    *slowEvaluator
 	addr    string
 	store   *db.Store
+	scanner *Scanner
 	elapsed time.Duration
 }
 
@@ -160,7 +161,7 @@ func runScan(t *testing.T, messages int, dryRun bool) scanRun {
 		if got.Status != "running" {
 			elapsed := time.Since(started)
 			t.Logf("%d messages in %v, peak Jev concurrency %d", messages, elapsed.Round(time.Millisecond), eval.peak.Load())
-			return scanRun{job: *got, eval: eval, addr: addr, store: store, elapsed: elapsed}
+			return scanRun{job: *got, eval: eval, addr: addr, store: store, scanner: scanner, elapsed: elapsed}
 		}
 		if time.Since(started) > time.Minute {
 			t.Fatal("scan did not finish")
@@ -284,5 +285,38 @@ func TestTrashListsAndDeletesOnlySiftMail(t *testing.T) {
 
 	if _, err := DeleteFromTrash(run.store, listing.UIDValidity+1, uids); err == nil {
 		t.Fatal("delete with a stale UIDVALIDITY succeeded")
+	}
+}
+
+func TestApplyDryRunMovesSpamAndRecordsEveryVerdict(t *testing.T) {
+	const messages = 400
+	run := runScan(t, messages, true)
+	if _, err := run.scanner.Apply(run.job.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		job, err := run.store.GetScanJob(run.job.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if job.Status == "applied" {
+			break
+		}
+		if job.Status != "applying" || time.Now().After(deadline) {
+			t.Fatalf("apply ended in %q: %s", job.Status, job.ErrorMsg)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := mailboxCount(t, run.addr, "Trash"); got != messages/4 {
+		t.Fatalf("Trash holds %d, want %d", got, messages/4)
+	}
+	pending, err := run.store.ListPendingScanResults(run.job.ID)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("%d results still pending (err %v)", len(pending), err)
+	}
+	trashed, err := run.store.ListTrashedEvents()
+	if err != nil || len(trashed) != messages/4 {
+		t.Fatalf("recorded %d trash events (err %v), want %d", len(trashed), err, messages/4)
 	}
 }
