@@ -8,22 +8,23 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 )
 
-func DiscoverMailboxes(c *imapclient.Client, includeArchive bool) []string {
+func DiscoverMailboxes(c *imapclient.Client, includeHistoricalFolders bool) []string {
 	list, err := c.List("", "*", nil).Collect()
 	if err != nil || len(list) == 0 {
 		return []string{"INBOX"}
 	}
-	return FilterScannableMailboxes(list, includeArchive)
+	return FilterScannableMailboxes(list, includeHistoricalFolders)
 }
 
-func FilterScannableMailboxes(list []*goimap.ListData, includeArchive bool) []string {
+func FilterScannableMailboxes(list []*goimap.ListData, includeHistoricalFolders bool) []string {
 	var inbox []string
 	var junk []string
 	var archive []string
+	var trash []string
 	var others []string
 
 	for _, m := range list {
-		if shouldSkipMailbox(m, includeArchive) {
+		if shouldSkipMailbox(m, includeHistoricalFolders) {
 			continue
 		}
 		name := m.Mailbox
@@ -35,16 +36,19 @@ func FilterScannableMailboxes(list []*goimap.ListData, includeArchive bool) []st
 			junk = append(junk, name)
 		case hasAttr(m.Attrs, goimap.MailboxAttrArchive) || lower == "archive":
 			archive = append(archive, name)
+		case hasAttr(m.Attrs, goimap.MailboxAttrTrash) || lower == "deleted messages" || lower == "trash":
+			trash = append(trash, name)
 		default:
 			others = append(others, name)
 		}
 	}
 
 	sort.Strings(others)
-	out := make([]string, 0, len(inbox)+len(junk)+len(archive)+len(others))
+	out := make([]string, 0, len(inbox)+len(junk)+len(archive)+len(trash)+len(others))
 	out = append(out, inbox...)
 	out = append(out, junk...)
 	out = append(out, archive...)
+	out = append(out, trash...)
 	out = append(out, others...)
 	if len(out) == 0 {
 		return []string{"INBOX"}
@@ -52,18 +56,17 @@ func FilterScannableMailboxes(list []*goimap.ListData, includeArchive bool) []st
 	return out
 }
 
-func shouldSkipMailbox(m *goimap.ListData, includeArchive bool) bool {
+func shouldSkipMailbox(m *goimap.ListData, includeHistoricalFolders bool) bool {
 	for _, attr := range m.Attrs {
 		switch attr {
 		case goimap.MailboxAttrNoSelect,
 			goimap.MailboxAttrNonExistent,
-			goimap.MailboxAttrTrash,
 			goimap.MailboxAttrSent,
 			goimap.MailboxAttrDrafts,
 			goimap.MailboxAttrAll:
 			return true
-		case goimap.MailboxAttrArchive:
-			if !includeArchive {
+		case goimap.MailboxAttrArchive, goimap.MailboxAttrTrash:
+			if !includeHistoricalFolders {
 				return true
 			}
 		}
@@ -71,10 +74,10 @@ func shouldSkipMailbox(m *goimap.ListData, includeArchive bool) bool {
 
 	lower := strings.ToLower(strings.TrimSpace(m.Mailbox))
 	switch lower {
-	case "deleted messages", "trash", "sent messages", "sent", "drafts", "notes", "outbox", "recovered messages":
+	case "sent messages", "sent", "drafts", "notes", "outbox", "recovered messages":
 		return true
-	case "archive":
-		return !includeArchive
+	case "archive", "deleted messages", "trash":
+		return !includeHistoricalFolders
 	}
 	return false
 }

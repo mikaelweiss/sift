@@ -198,7 +198,7 @@ struct SettingsSheet: View {
                     .padding(8)
                 }
 
-                GroupBox("Outbound Abuse Reporting Identity") {
+                GroupBox("Abuse Reporting") {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Categories checked under Report above queue RDAP/WHOIS abuse reports with your address redacted from headers.")
                             .font(.caption)

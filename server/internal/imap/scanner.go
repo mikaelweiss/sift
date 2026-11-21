@@ -339,9 +339,12 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 				if !job.DryRun {
 					actionTaken := decision.Action
 					if isSpam {
-						if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
-							log.Printf("scan apply %s %s UID %d failed: %v", decision.Action, plan.mailbox, uid, actErr)
-							actionTaken = "error"
+						alreadyInTrash := decision.Action == "trash" && plan.mailbox == trashMailbox
+						if !alreadyInTrash {
+							if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
+								log.Printf("scan apply %s %s UID %d failed: %v", decision.Action, plan.mailbox, uid, actErr)
+								actionTaken = "error"
+							}
 						}
 					}
 					_ = s.store.RecordEmailEvent(db.EmailEvent{

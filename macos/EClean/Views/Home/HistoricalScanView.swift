@@ -13,7 +13,7 @@ struct HistoricalScanView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Historical Mail Scan")
                         .font(.headline)
-                    Text("Scans INBOX, Junk, Archive, and custom iCloud folders.")
+                    Text("Scans INBOX, Junk, Archive, Trash, and custom iCloud folders.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

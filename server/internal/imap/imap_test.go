@@ -73,7 +73,7 @@ func TestFilterScannableMailboxes(t *testing.T) {
 	}
 
 	hist := FilterScannableMailboxes(list, true)
-	wantHist := []string{"INBOX", "Junk", "Archive", "Receipts", "Work"}
+	wantHist := []string{"INBOX", "Junk", "Archive", "Deleted Messages", "Receipts", "Work"}
 	if !reflect.DeepEqual(hist, wantHist) {
 		t.Fatalf("historical mailboxes mismatch: got %v want %v", hist, wantHist)
 	}
