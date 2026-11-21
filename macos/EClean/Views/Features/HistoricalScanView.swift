@@ -15,9 +15,9 @@ struct HistoricalScanView: View {
                         .font(.title3)
                         .foregroundStyle(.blue)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Historical Inbox Scan")
+                        Text("Historical Mail Scan")
                             .font(.headline)
-                        Text("Scan existing emails on your server to clean old spam and backfill your Home stats chart.")
+                        Text("Scan INBOX, Junk, Archive, and all custom iCloud folders to clean old spam and backfill your Home stats chart.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -95,7 +95,7 @@ struct HistoricalScanView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                 }
-                Text("Job Status: \(job.status.capitalized) (\(job.dryRun ? "Dry Run" : "Live"), \(job.dateRange))")
+                Text("Job Status: \(job.status.capitalized) (\(job.dryRun ? "Dry Run" : "Live"), \(job.dateRange))\(job.status == "running" && !(job.currentMailbox ?? "").isEmpty ? " · \(job.currentMailbox!)" : "")")
                     .font(.subheadline.weight(.medium))
                 Spacer()
                 Text("\(job.scannedMessages) / \(job.totalMessages) scanned · \(job.spamFound) spam")
@@ -131,7 +131,7 @@ struct HistoricalScanView: View {
                                     Text(sample.subject.isEmpty ? "(No subject)" : sample.subject)
                                         .font(.caption.weight(.medium))
                                         .lineLimit(1)
-                                    Text(sample.sender)
+                                    Text("\(sample.mailbox ?? "INBOX") · \(sample.sender)")
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }

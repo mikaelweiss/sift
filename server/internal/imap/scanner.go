@@ -55,13 +55,14 @@ func (s *Scanner) Start(dateRange string, dryRun bool, ratePerSec float64) (db.S
 		ratePerSec = 5
 	}
 	job := db.ScanJob{
-		ID:         uuid.NewString(),
-		DateRange:  dateRange,
-		DryRun:     dryRun,
-		RatePerSec: ratePerSec,
-		Status:     "running",
-		Summary:    map[string]int{},
-		Samples:    []db.ScanSample{},
+		ID:          uuid.NewString(),
+		DateRange:   dateRange,
+		DryRun:      dryRun,
+		RatePerSec:  ratePerSec,
+		Status:      "running",
+		Checkpoints: map[string]uint32{},
+		Summary:     map[string]int{},
+		Samples:     []db.ScanSample{},
 	}
 	if err := s.store.SaveScanJob(job); err != nil {
 		s.mu.Unlock()
@@ -170,8 +171,18 @@ func (s *Scanner) clearActive(id string) {
 	s.mu.Unlock()
 }
 
+type folderPlan struct {
+	mailbox     string
+	uidValidity uint32
+	uids        []goimap.UID
+}
+
 func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	defer s.clearActive(job.ID)
+
+	if job.Checkpoints == nil {
+		job.Checkpoints = map[string]uint32{}
+	}
 
 	cfg, err := s.store.GetSettings()
 	if err != nil {
@@ -186,30 +197,50 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	defer c.Close()
 
 	trashMailbox := discoverTrashMailbox(c)
-	mbox, err := c.Select("INBOX", &goimap.SelectOptions{ReadOnly: job.DryRun}).Wait()
-	if err != nil {
-		s.failJob(&job, fmt.Errorf("select INBOX: %w", err))
-		return
-	}
-
+	mailboxes := DiscoverMailboxes(c, true)
 	criteria := buildSearchCriteria(job.DateRange, time.Now().UTC())
-	searchData, err := c.UIDSearch(criteria, nil).Wait()
-	if err != nil {
-		s.failJob(&job, fmt.Errorf("search INBOX: %w", err))
-		return
-	}
 
-	allUIDs := searchData.AllUIDs()
-	sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
+	var plans []folderPlan
+	totalAcrossFolders := 0
+	for _, mailbox := range mailboxes {
+		if ctx.Err() != nil {
+			job.Status = "cancelled"
+			_ = s.store.SaveScanJob(job)
+			s.emit(job)
+			return
+		}
+		mbox, selErr := c.Select(mailbox, &goimap.SelectOptions{ReadOnly: true}).Wait()
+		if selErr != nil {
+			log.Printf("scan skip folder %q: %v", mailbox, selErr)
+			continue
+		}
+		searchData, searchErr := c.UIDSearch(criteria, nil).Wait()
+		if searchErr != nil {
+			log.Printf("scan search folder %q failed: %v", mailbox, searchErr)
+			continue
+		}
+		allUIDs := searchData.AllUIDs()
+		sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
+		totalAcrossFolders += len(allUIDs)
 
-	var pending []goimap.UID
-	for _, u := range allUIDs {
-		if uint32(u) > job.LastUID {
-			pending = append(pending, u)
+		lastFolderUID := job.Checkpoints[mailbox]
+		var pending []goimap.UID
+		for _, u := range allUIDs {
+			if uint32(u) > lastFolderUID {
+				pending = append(pending, u)
+			}
+		}
+		if len(pending) > 0 {
+			plans = append(plans, folderPlan{
+				mailbox:     mailbox,
+				uidValidity: mbox.UIDValidity,
+				uids:        pending,
+			})
 		}
 	}
-	if job.TotalMessages == 0 {
-		job.TotalMessages = len(allUIDs)
+
+	if job.TotalMessages == 0 || totalAcrossFolders > job.TotalMessages {
+		job.TotalMessages = totalAcrossFolders
 		_ = s.store.SaveScanJob(job)
 		s.emit(job)
 	}
@@ -217,34 +248,18 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	minDelay := time.Duration(float64(time.Second) / job.RatePerSec)
 	bodySection := &goimap.FetchItemBodySection{Peek: true}
 
-	for start := 0; start < len(pending); start += scanBatchSize {
-		if err := s.waitIfPaused(ctx); err != nil {
-			job.Status = "cancelled"
-			_ = s.store.SaveScanJob(job)
-			s.emit(job)
-			return
+	for _, plan := range plans {
+		job.CurrentMailbox = plan.mailbox
+		_ = s.store.SaveScanJob(job)
+		s.emit(job)
+
+		mbox, selErr := c.Select(plan.mailbox, &goimap.SelectOptions{ReadOnly: job.DryRun}).Wait()
+		if selErr != nil {
+			log.Printf("scan re-select %q failed: %v", plan.mailbox, selErr)
+			continue
 		}
 
-		end := start + scanBatchSize
-		if end > len(pending) {
-			end = len(pending)
-		}
-		var fetchSet goimap.UIDSet
-		for _, u := range pending[start:end] {
-			fetchSet.AddNum(u)
-		}
-
-		msgs, err := c.Fetch(fetchSet, &goimap.FetchOptions{
-			UID:          true,
-			InternalDate: true,
-			BodySection:  []*goimap.FetchItemBodySection{bodySection},
-		}).Collect()
-		if err != nil {
-			s.failJob(&job, fmt.Errorf("fetch batch: %w", err))
-			return
-		}
-
-		for _, msg := range msgs {
+		for start := 0; start < len(plan.uids); start += scanBatchSize {
 			if err := s.waitIfPaused(ctx); err != nil {
 				job.Status = "cancelled"
 				_ = s.store.SaveScanJob(job)
@@ -252,96 +267,129 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 				return
 			}
 
-			uid := uint32(msg.UID)
-			if !job.DryRun {
-				if exists, _ := s.store.HasEmailEvent(mbox.UIDValidity, uid); exists {
-					job.ScannedMessages++
-					job.LastUID = uid
-					continue
-				}
+			end := start + scanBatchSize
+			if end > len(plan.uids) {
+				end = len(plan.uids)
+			}
+			var fetchSet goimap.UIDSet
+			for _, u := range plan.uids[start:end] {
+				fetchSet.AddNum(u)
 			}
 
-			raw := msg.FindBodySection(bodySection)
-			input := ParseRawMessage(mbox.UIDValidity, uid, msg.InternalDate, raw)
-			decision, evalErr := s.classifier.Evaluate(ctx, input)
-			if evalErr != nil {
-				log.Printf("scan UID %d classify failed: %v", uid, evalErr)
-				job.ScannedMessages++
-				job.LastUID = uid
-				continue
+			msgs, err := c.Fetch(fetchSet, &goimap.FetchOptions{
+				UID:          true,
+				InternalDate: true,
+				BodySection:  []*goimap.FetchItemBodySection{bodySection},
+			}).Collect()
+			if err != nil {
+				s.failJob(&job, fmt.Errorf("fetch batch in %s: %w", plan.mailbox, err))
+				return
 			}
 
-			isSpam := decision.Action == "trash" || decision.Action == "delete"
-			if isSpam {
-				job.SpamFound++
-				if job.Summary == nil {
-					job.Summary = map[string]int{}
+			for _, msg := range msgs {
+				if err := s.waitIfPaused(ctx); err != nil {
+					job.Status = "cancelled"
+					_ = s.store.SaveScanJob(job)
+					s.emit(job)
+					return
 				}
-				job.Summary[decision.CategoryID]++
-				if len(job.Samples) < maxDryRunSamples {
-					job.Samples = append(job.Samples, db.ScanSample{
-						UID:        uid,
-						Sender:     input.SenderEmail,
-						Subject:    input.Subject,
-						EmailDate:  input.EmailDate.UTC().Format(time.RFC3339),
-						CategoryID: decision.CategoryID,
-						Confidence: decision.Confidence,
-						Action:     decision.Action,
-					})
-				}
-			}
 
-			if !job.DryRun {
-				actionTaken := decision.Action
-				if isSpam {
-					if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
-						log.Printf("scan apply %s UID %d failed: %v", decision.Action, uid, actErr)
-						actionTaken = "error"
+				uid := uint32(msg.UID)
+				if !job.DryRun {
+					if exists, _ := s.store.HasEmailEvent(plan.mailbox, mbox.UIDValidity, uid); exists {
+						job.ScannedMessages++
+						job.LastUID = uid
+						job.Checkpoints[plan.mailbox] = uid
+						continue
 					}
 				}
-				_ = s.store.RecordEmailEvent(db.EmailEvent{
-					UIDValidity:  mbox.UIDValidity,
-					UID:          uid,
-					MessageID:    input.MessageID,
-					Sender:       input.SenderEmail,
-					SenderDomain: input.SenderDomain,
-					Subject:      input.Subject,
-					EmailDate:    input.EmailDate.UTC().Format(time.RFC3339),
-					CategoryID:   decision.CategoryID,
-					Confidence:   decision.Confidence,
-					Action:       actionTaken,
-					Source:       "backfill",
-				})
-				// Only consider abuse reporting for emails newer than 7 days.
-				if (actionTaken == "trash" || actionTaken == "delete") && wAgeWithin7Days(input.EmailDate) && s.abuseSvc != nil {
-					_ = s.abuseSvc.Consider(ctx, abuse.Candidate{
-						SenderEmail:  input.SenderEmail,
+
+				raw := msg.FindBodySection(bodySection)
+				input := ParseRawMessage(mbox.UIDValidity, uid, msg.InternalDate, raw)
+				decision, evalErr := s.classifier.Evaluate(ctx, input)
+				if evalErr != nil {
+					log.Printf("scan %s UID %d classify failed: %v", plan.mailbox, uid, evalErr)
+					job.ScannedMessages++
+					job.LastUID = uid
+					job.Checkpoints[plan.mailbox] = uid
+					continue
+				}
+
+				isSpam := decision.Action == "trash" || decision.Action == "delete"
+				if isSpam {
+					job.SpamFound++
+					if job.Summary == nil {
+						job.Summary = map[string]int{}
+					}
+					job.Summary[decision.CategoryID]++
+					if len(job.Samples) < maxDryRunSamples {
+						job.Samples = append(job.Samples, db.ScanSample{
+							Mailbox:    plan.mailbox,
+							UID:        uid,
+							Sender:     input.SenderEmail,
+							Subject:    input.Subject,
+							EmailDate:  input.EmailDate.UTC().Format(time.RFC3339),
+							CategoryID: decision.CategoryID,
+							Confidence: decision.Confidence,
+							Action:     decision.Action,
+						})
+					}
+				}
+
+				if !job.DryRun {
+					actionTaken := decision.Action
+					if isSpam {
+						if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
+							log.Printf("scan apply %s %s UID %d failed: %v", decision.Action, plan.mailbox, uid, actErr)
+							actionTaken = "error"
+						}
+					}
+					_ = s.store.RecordEmailEvent(db.EmailEvent{
+						Mailbox:      plan.mailbox,
+						UIDValidity:  mbox.UIDValidity,
+						UID:          uid,
+						MessageID:    input.MessageID,
+						Sender:       input.SenderEmail,
 						SenderDomain: input.SenderDomain,
 						Subject:      input.Subject,
-						RawHeaders:   input.RawHeaders,
+						EmailDate:    input.EmailDate.UTC().Format(time.RFC3339),
 						CategoryID:   decision.CategoryID,
 						Confidence:   decision.Confidence,
-						EmailDate:    input.EmailDate,
+						Action:       actionTaken,
+						Source:       "backfill",
 					})
+					if (actionTaken == "trash" || actionTaken == "delete") && wAgeWithin7Days(input.EmailDate) && s.abuseSvc != nil {
+						_ = s.abuseSvc.Consider(ctx, abuse.Candidate{
+							SenderEmail:  input.SenderEmail,
+							SenderDomain: input.SenderDomain,
+							Subject:      input.Subject,
+							RawHeaders:   input.RawHeaders,
+							CategoryID:   decision.CategoryID,
+							Confidence:   decision.Confidence,
+							EmailDate:    input.EmailDate,
+						})
+					}
 				}
-			}
 
-			job.ScannedMessages++
-			job.LastUID = uid
-			_ = s.store.SaveScanJob(job)
-			s.emit(job)
-
-			select {
-			case <-ctx.Done():
-				job.Status = "cancelled"
+				job.ScannedMessages++
+				job.LastUID = uid
+				job.Checkpoints[plan.mailbox] = uid
 				_ = s.store.SaveScanJob(job)
 				s.emit(job)
-				return
-			case <-time.After(minDelay):
+
+				select {
+				case <-ctx.Done():
+					job.Status = "cancelled"
+					_ = s.store.SaveScanJob(job)
+					s.emit(job)
+					return
+				case <-time.After(minDelay):
+				}
 			}
 		}
 	}
 
+	job.CurrentMailbox = ""
 	job.Status = "completed"
 	_ = s.store.SaveScanJob(job)
 	s.emit(job)

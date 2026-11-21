@@ -1,9 +1,12 @@
 package imap
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	goimap "github.com/emersion/go-imap/v2"
 )
 
 func TestParseRawMessageMultipartHTMLAndHeaders(t *testing.T) {
@@ -52,5 +55,32 @@ func TestBuildSearchCriteria(t *testing.T) {
 	cAll := buildSearchCriteria("all", now)
 	if !cAll.Since.IsZero() {
 		t.Fatalf("expected empty Since for all")
+	}
+}
+
+func TestFilterScannableMailboxes(t *testing.T) {
+	list := []*goimap.ListData{
+		{Mailbox: "INBOX"},
+		{Mailbox: "Junk", Attrs: []goimap.MailboxAttr{goimap.MailboxAttrJunk}},
+		{Mailbox: "Archive", Attrs: []goimap.MailboxAttr{goimap.MailboxAttrArchive}},
+		{Mailbox: "Deleted Messages", Attrs: []goimap.MailboxAttr{goimap.MailboxAttrTrash}},
+		{Mailbox: "Sent Messages", Attrs: []goimap.MailboxAttr{goimap.MailboxAttrSent}},
+		{Mailbox: "Drafts", Attrs: []goimap.MailboxAttr{goimap.MailboxAttrDrafts}},
+		{Mailbox: "Notes"},
+		{Mailbox: "Receipts"},
+		{Mailbox: "Work"},
+		{Mailbox: "FolderContainer", Attrs: []goimap.MailboxAttr{goimap.MailboxAttrNoSelect}},
+	}
+
+	hist := FilterScannableMailboxes(list, true)
+	wantHist := []string{"INBOX", "Junk", "Archive", "Receipts", "Work"}
+	if !reflect.DeepEqual(hist, wantHist) {
+		t.Fatalf("historical mailboxes mismatch: got %v want %v", hist, wantHist)
+	}
+
+	rt := FilterScannableMailboxes(list, false)
+	wantRT := []string{"INBOX", "Junk", "Receipts", "Work"}
+	if !reflect.DeepEqual(rt, wantRT) {
+		t.Fatalf("realtime mailboxes mismatch: got %v want %v", rt, wantRT)
 	}
 }

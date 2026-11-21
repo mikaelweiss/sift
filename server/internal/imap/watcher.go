@@ -137,13 +137,10 @@ func (w *Watcher) runSession(ctx context.Context, cfg db.AppSettings) error {
 	defer c.Close()
 
 	trashMailbox := discoverTrashMailbox(c)
-	mbox, err := c.Select("INBOX", nil).Wait()
-	if err != nil {
-		return fmt.Errorf("select INBOX: %w", err)
-	}
+	watchMailboxes := DiscoverMailboxes(c, false)
 	w.setStatus(true, "")
 
-	if err := w.processNewMessages(ctx, c, mbox.UIDValidity, trashMailbox); err != nil {
+	if err := w.sweepMailboxes(ctx, c, watchMailboxes, trashMailbox); err != nil {
 		return err
 	}
 
@@ -152,32 +149,37 @@ func (w *Watcher) runSession(ctx context.Context, cfg db.AppSettings) error {
 			return ctx.Err()
 		}
 
+		// Keep INBOX selected for real-time IDLE push, and sweep Junk and custom folders every 2 minutes or on wakeup.
+		if _, err := c.Select("INBOX", nil).Wait(); err != nil {
+			return fmt.Errorf("select INBOX: %w", err)
+		}
+
 		idleCmd, err := c.Idle()
 		if err != nil {
 			return fmt.Errorf("start IDLE: %w", err)
 		}
 
-		refreshTimer := time.NewTimer(20 * time.Minute)
+		sweepTimer := time.NewTimer(2 * time.Minute)
 		shouldReload := false
-		shouldProcess := false
+		shouldSweep := false
 
 		select {
 		case <-ctx.Done():
-			refreshTimer.Stop()
+			sweepTimer.Stop()
 			_ = idleCmd.Close()
 			_ = idleCmd.Wait()
 			return ctx.Err()
 		case <-w.reloadCh:
 			shouldReload = true
 		case <-newMailCh:
-			shouldProcess = true
-		case <-refreshTimer.C:
-			shouldProcess = true
+			shouldSweep = true
+		case <-sweepTimer.C:
+			shouldSweep = true
 		case <-c.Closed():
-			refreshTimer.Stop()
+			sweepTimer.Stop()
 			return errors.New("imap connection closed by server")
 		}
-		refreshTimer.Stop()
+		sweepTimer.Stop()
 
 		if err := idleCmd.Close(); err != nil {
 			return fmt.Errorf("close IDLE: %w", err)
@@ -189,41 +191,58 @@ func (w *Watcher) runSession(ctx context.Context, cfg db.AppSettings) error {
 			_ = c.Logout().Wait()
 			return nil
 		}
-		if shouldProcess {
-			if err := w.processNewMessages(ctx, c, mbox.UIDValidity, trashMailbox); err != nil {
+		if shouldSweep {
+			watchMailboxes = DiscoverMailboxes(c, false)
+			if err := w.sweepMailboxes(ctx, c, watchMailboxes, trashMailbox); err != nil {
 				return err
 			}
 		}
 	}
 }
 
-func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, uidValidity uint32, trashMailbox string) error {
-	storedValidity, lastUID, err := w.store.GetIMAPCursor()
+func (w *Watcher) sweepMailboxes(ctx context.Context, c *imapclient.Client, mailboxes []string, trashMailbox string) error {
+	for _, mailbox := range mailboxes {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		mbox, err := c.Select(mailbox, nil).Wait()
+		if err != nil {
+			log.Printf("select %q skipped: %v", mailbox, err)
+			continue
+		}
+		if err := w.processNewMessages(ctx, c, mailbox, mbox.UIDValidity, trashMailbox); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, mailbox string, uidValidity uint32, trashMailbox string) error {
+	storedValidity, lastUID, err := w.store.GetMailboxCursor(mailbox)
 	if err != nil {
 		return err
 	}
 
 	if storedValidity == 0 || storedValidity != uidValidity {
-		// On fresh start or UIDVALIDITY reset, anchor cursor to current highest UID so only newly arriving mail is filtered in real time.
+		// Anchor new mailboxes to their current max UID so only newly arriving mail is filtered in real time.
 		allData, err := c.UIDSearch(&goimap.SearchCriteria{}, nil).Wait()
 		if err != nil {
-			return fmt.Errorf("initial UID search: %w", err)
+			return fmt.Errorf("initial UID search in %s: %w", mailbox, err)
 		}
-		uids := allData.AllUIDs()
 		var maxUID uint32
-		for _, u := range uids {
+		for _, u := range allData.AllUIDs() {
 			if uint32(u) > maxUID {
 				maxUID = uint32(u)
 			}
 		}
-		return w.store.SetIMAPCursor(uidValidity, maxUID)
+		return w.store.SetMailboxCursor(mailbox, uidValidity, maxUID)
 	}
 
 	var uidSet goimap.UIDSet
 	uidSet.AddRange(goimap.UID(lastUID+1), 0)
 	searchData, err := c.UIDSearch(&goimap.SearchCriteria{UID: []goimap.UIDSet{uidSet}}, nil).Wait()
 	if err != nil {
-		return fmt.Errorf("search new UIDs: %w", err)
+		return fmt.Errorf("search new UIDs in %s: %w", mailbox, err)
 	}
 
 	var newUIDs []goimap.UID
@@ -247,7 +266,7 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		BodySection:  []*goimap.FetchItemBodySection{bodySection},
 	}).Collect()
 	if err != nil {
-		return fmt.Errorf("fetch new messages: %w", err)
+		return fmt.Errorf("fetch new messages in %s: %w", mailbox, err)
 	}
 
 	maxSeen := lastUID
@@ -256,7 +275,7 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		if uid > maxSeen {
 			maxSeen = uid
 		}
-		if exists, _ := w.store.HasEmailEvent(uidValidity, uid); exists {
+		if exists, _ := w.store.HasEmailEvent(mailbox, uidValidity, uid); exists {
 			continue
 		}
 		raw := msg.FindBodySection(bodySection)
@@ -264,19 +283,20 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 
 		decision, err := w.classifier.Evaluate(ctx, input)
 		if err != nil {
-			log.Printf("classify UID %d failed: %v", uid, err)
+			log.Printf("classify %s UID %d failed: %v", mailbox, uid, err)
 			continue
 		}
 
 		actionTaken := decision.Action
 		if decision.Action == "trash" || decision.Action == "delete" {
 			if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
-				log.Printf("apply %s to UID %d failed: %v", decision.Action, uid, actErr)
+				log.Printf("apply %s to %s UID %d failed: %v", decision.Action, mailbox, uid, actErr)
 				actionTaken = "error"
 			}
 		}
 
 		ev := db.EmailEvent{
+			Mailbox:      mailbox,
 			UIDValidity:  uidValidity,
 			UID:          uid,
 			MessageID:    input.MessageID,
@@ -306,7 +326,7 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		}
 	}
 
-	return w.store.SetIMAPCursor(uidValidity, maxSeen)
+	return w.store.SetMailboxCursor(mailbox, uidValidity, maxSeen)
 }
 
 func dialAndLogin(host string, port int, username, password string, opts *imapclient.Options) (*imapclient.Client, error) {
@@ -330,7 +350,6 @@ func dialAndLogin(host string, port int, username, password string, opts *imapcl
 		_ = c.Close()
 		return nil, fmt.Errorf("imap login: %w", err)
 	}
-	// iCloud requires re-querying CAPABILITY after login so IDLE is advertised cleanly.
 	_, _ = c.Capability().Wait()
 	return c, nil
 }

@@ -62,6 +62,7 @@ type AppSettings struct {
 
 type EmailEvent struct {
 	ID           int64   `json:"id"`
+	Mailbox      string  `json:"mailbox"`
 	UIDValidity  uint32  `json:"uid_validity"`
 	UID          uint32  `json:"uid"`
 	MessageID    string  `json:"message_id"`
@@ -84,23 +85,26 @@ type DailyCategoryStat struct {
 }
 
 type ScanJob struct {
-	ID              string         `json:"id"`
-	DateRange       string         `json:"date_range"`
-	DryRun          bool           `json:"dry_run"`
-	RatePerSec      float64        `json:"rate_per_sec"`
-	Status          string         `json:"status"`
-	TotalMessages   int            `json:"total_messages"`
-	ScannedMessages int            `json:"scanned_messages"`
-	SpamFound       int            `json:"spam_found"`
-	LastUID         uint32         `json:"last_uid"`
-	Summary         map[string]int `json:"summary"`
-	Samples         []ScanSample   `json:"samples"`
-	ErrorMsg        string         `json:"error_msg"`
-	CreatedAt       string         `json:"created_at"`
-	UpdatedAt       string         `json:"updated_at"`
+	ID              string            `json:"id"`
+	DateRange       string            `json:"date_range"`
+	DryRun          bool              `json:"dry_run"`
+	RatePerSec      float64           `json:"rate_per_sec"`
+	Status          string            `json:"status"`
+	CurrentMailbox  string            `json:"current_mailbox"`
+	TotalMessages   int               `json:"total_messages"`
+	ScannedMessages int               `json:"scanned_messages"`
+	SpamFound       int               `json:"spam_found"`
+	LastUID         uint32            `json:"last_uid"`
+	Checkpoints     map[string]uint32 `json:"checkpoints"`
+	Summary         map[string]int    `json:"summary"`
+	Samples         []ScanSample      `json:"samples"`
+	ErrorMsg        string            `json:"error_msg"`
+	CreatedAt       string            `json:"created_at"`
+	UpdatedAt       string            `json:"updated_at"`
 }
 
 type ScanSample struct {
+	Mailbox    string  `json:"mailbox"`
 	UID        uint32  `json:"uid"`
 	Sender     string  `json:"sender"`
 	Subject    string  `json:"subject"`
@@ -297,6 +301,40 @@ func (s *Store) migrate() error {
 			version: 2,
 			stmts: []string{
 				`UPDATE settings SET value = 'true' WHERE key = 'abuse_enabled' AND value = 'false'`,
+			},
+		},
+		{
+			version: 3,
+			stmts: []string{
+				`CREATE TABLE IF NOT EXISTS imap_cursors (
+					mailbox TEXT PRIMARY KEY,
+					uid_validity INTEGER NOT NULL,
+					last_uid INTEGER NOT NULL
+				)`,
+				`CREATE TABLE email_events_v3 (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					mailbox TEXT NOT NULL DEFAULT 'INBOX',
+					uid_validity INTEGER NOT NULL,
+					uid INTEGER NOT NULL,
+					message_id TEXT NOT NULL DEFAULT '',
+					sender TEXT NOT NULL,
+					sender_domain TEXT NOT NULL,
+					subject TEXT NOT NULL,
+					email_date TEXT NOT NULL,
+					processed_at TEXT NOT NULL,
+					category_id TEXT NOT NULL DEFAULT '',
+					confidence REAL NOT NULL DEFAULT 0,
+					action TEXT NOT NULL,
+					source TEXT NOT NULL,
+					UNIQUE(mailbox, uid_validity, uid)
+				)`,
+				`INSERT INTO email_events_v3(id, mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source)
+				 SELECT id, 'INBOX', uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source FROM email_events`,
+				`DROP TABLE email_events`,
+				`ALTER TABLE email_events_v3 RENAME TO email_events`,
+				`CREATE INDEX IF NOT EXISTS idx_email_events_date_cat ON email_events(email_date, category_id, action)`,
+				`ALTER TABLE scan_jobs ADD COLUMN current_mailbox TEXT NOT NULL DEFAULT ''`,
+				`ALTER TABLE scan_jobs ADD COLUMN checkpoints_json TEXT NOT NULL DEFAULT '{}'`,
 			},
 		},
 	}
@@ -605,6 +643,36 @@ func (s *Store) SaveSettings(cfg AppSettings) error {
 	return nil
 }
 
+func (s *Store) GetMailboxCursor(mailbox string) (uidValidity uint32, lastUID uint32, err error) {
+	if mailbox == "" {
+		mailbox = "INBOX"
+	}
+	var v, u int64
+	err = s.db.QueryRow(`SELECT uid_validity, last_uid FROM imap_cursors WHERE mailbox = ?`, mailbox).Scan(&v, &u)
+	if errors.Is(err, sql.ErrNoRows) {
+		if mailbox == "INBOX" {
+			return s.GetIMAPCursor()
+		}
+		return 0, 0, nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	return uint32(v), uint32(u), nil
+}
+
+func (s *Store) SetMailboxCursor(mailbox string, uidValidity, lastUID uint32) error {
+	if mailbox == "" {
+		mailbox = "INBOX"
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO imap_cursors(mailbox, uid_validity, last_uid) VALUES(?, ?, ?)
+		 ON CONFLICT(mailbox) DO UPDATE SET uid_validity=excluded.uid_validity, last_uid=excluded.last_uid`,
+		mailbox, uidValidity, lastUID,
+	)
+	return err
+}
+
 func (s *Store) GetIMAPCursor() (uidValidity uint32, lastUID uint32, err error) {
 	vStr, _, err := s.GetRawSetting("imap_uid_validity")
 	if err != nil {
@@ -735,20 +803,26 @@ func (s *Store) IsAllowlisted(senderEmail, senderDomain string) (bool, error) {
 	return count > 0, err
 }
 
-func (s *Store) HasEmailEvent(uidValidity, uid uint32) (bool, error) {
+func (s *Store) HasEmailEvent(mailbox string, uidValidity, uid uint32) (bool, error) {
+	if mailbox == "" {
+		mailbox = "INBOX"
+	}
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(1) FROM email_events WHERE uid_validity = ? AND uid = ?`, uidValidity, uid).Scan(&count)
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM email_events WHERE mailbox = ? AND uid_validity = ? AND uid = ?`, mailbox, uidValidity, uid).Scan(&count)
 	return count > 0, err
 }
 
 func (s *Store) RecordEmailEvent(ev EmailEvent) error {
+	if ev.Mailbox == "" {
+		ev.Mailbox = "INBOX"
+	}
 	if ev.ProcessedAt == "" {
 		ev.ProcessedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO email_events(uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.UIDValidity, ev.UID, ev.MessageID, ev.Sender, ev.SenderDomain, ev.Subject,
+		`INSERT OR IGNORE INTO email_events(mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.Mailbox, ev.UIDValidity, ev.UID, ev.MessageID, ev.Sender, ev.SenderDomain, ev.Subject,
 		ev.EmailDate, ev.ProcessedAt, ev.CategoryID, ev.Confidence, ev.Action, ev.Source,
 	)
 	return err
@@ -790,34 +864,44 @@ func (s *Store) SaveScanJob(job ScanJob) error {
 		job.CreatedAt = now
 	}
 	job.UpdatedAt = now
+	if job.Checkpoints == nil {
+		job.Checkpoints = map[string]uint32{}
+	}
+	if job.Summary == nil {
+		job.Summary = map[string]int{}
+	}
+	if job.Samples == nil {
+		job.Samples = []ScanSample{}
+	}
+	cpBytes, _ := json.Marshal(job.Checkpoints)
 	summaryBytes, _ := json.Marshal(job.Summary)
 	samplesBytes, _ := json.Marshal(job.Samples)
 	_, err := s.db.Exec(
-		`INSERT INTO scan_jobs(id, date_range, dry_run, rate_per_sec, status, total_messages, scanned_messages, spam_found, last_uid, summary_json, samples_json, error_msg, created_at, updated_at)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(id) DO UPDATE SET status=excluded.status, total_messages=excluded.total_messages, scanned_messages=excluded.scanned_messages, spam_found=excluded.spam_found, last_uid=excluded.last_uid, summary_json=excluded.summary_json, samples_json=excluded.samples_json, error_msg=excluded.error_msg, updated_at=excluded.updated_at`,
-		job.ID, job.DateRange, boolToInt(job.DryRun), job.RatePerSec, job.Status,
-		job.TotalMessages, job.ScannedMessages, job.SpamFound, job.LastUID,
+		`INSERT INTO scan_jobs(id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET status=excluded.status, current_mailbox=excluded.current_mailbox, total_messages=excluded.total_messages, scanned_messages=excluded.scanned_messages, spam_found=excluded.spam_found, last_uid=excluded.last_uid, checkpoints_json=excluded.checkpoints_json, summary_json=excluded.summary_json, samples_json=excluded.samples_json, error_msg=excluded.error_msg, updated_at=excluded.updated_at`,
+		job.ID, job.DateRange, boolToInt(job.DryRun), job.RatePerSec, job.Status, job.CurrentMailbox,
+		job.TotalMessages, job.ScannedMessages, job.SpamFound, job.LastUID, string(cpBytes),
 		string(summaryBytes), string(samplesBytes), job.ErrorMsg, job.CreatedAt, job.UpdatedAt,
 	)
 	return err
 }
 
 func (s *Store) GetLatestScanJob() (*ScanJob, error) {
-	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, total_messages, scanned_messages, spam_found, last_uid, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs ORDER BY created_at DESC LIMIT 1`)
+	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs ORDER BY created_at DESC LIMIT 1`)
 	return scanJobFromRow(row)
 }
 
 func (s *Store) GetScanJob(id string) (*ScanJob, error) {
-	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, total_messages, scanned_messages, spam_found, last_uid, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, date_range, dry_run, rate_per_sec, status, current_mailbox, total_messages, scanned_messages, spam_found, last_uid, checkpoints_json, summary_json, samples_json, error_msg, created_at, updated_at FROM scan_jobs WHERE id = ?`, id)
 	return scanJobFromRow(row)
 }
 
 func scanJobFromRow(row *sql.Row) (*ScanJob, error) {
 	var j ScanJob
 	var dryRun int
-	var sumJSON, sampJSON string
-	err := row.Scan(&j.ID, &j.DateRange, &dryRun, &j.RatePerSec, &j.Status, &j.TotalMessages, &j.ScannedMessages, &j.SpamFound, &j.LastUID, &sumJSON, &sampJSON, &j.ErrorMsg, &j.CreatedAt, &j.UpdatedAt)
+	var cpJSON, sumJSON, sampJSON string
+	err := row.Scan(&j.ID, &j.DateRange, &dryRun, &j.RatePerSec, &j.Status, &j.CurrentMailbox, &j.TotalMessages, &j.ScannedMessages, &j.SpamFound, &j.LastUID, &cpJSON, &sumJSON, &sampJSON, &j.ErrorMsg, &j.CreatedAt, &j.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -825,6 +909,8 @@ func scanJobFromRow(row *sql.Row) (*ScanJob, error) {
 		return nil, err
 	}
 	j.DryRun = dryRun == 1
+	j.Checkpoints = map[string]uint32{}
+	_ = json.Unmarshal([]byte(cpJSON), &j.Checkpoints)
 	j.Summary = map[string]int{}
 	_ = json.Unmarshal([]byte(sumJSON), &j.Summary)
 	_ = json.Unmarshal([]byte(sampJSON), &j.Samples)

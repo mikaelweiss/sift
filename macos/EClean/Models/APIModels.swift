@@ -160,6 +160,7 @@ struct DailyStatsResponse: Codable, Sendable {
 }
 
 struct ScanSample: Codable, Identifiable, Sendable {
+    var mailbox: String?
     var uid: UInt32
     var sender: String
     var subject: String
@@ -168,10 +169,10 @@ struct ScanSample: Codable, Identifiable, Sendable {
     var confidence: Double
     var action: String
 
-    var id: UInt32 { uid }
+    var id: String { "\(mailbox ?? "INBOX")-\(uid)" }
 
     enum CodingKeys: String, CodingKey {
-        case uid, sender, subject, confidence, action
+        case mailbox, uid, sender, subject, confidence, action
         case emailDate = "email_date"
         case categoryID = "category_id"
     }
@@ -183,6 +184,7 @@ struct ScanJob: Codable, Identifiable, Sendable {
     var dryRun: Bool
     var ratePerSec: Double
     var status: String
+    var currentMailbox: String?
     var totalMessages: Int
     var scannedMessages: Int
     var spamFound: Int
@@ -203,6 +205,7 @@ struct ScanJob: Codable, Identifiable, Sendable {
         case dateRange = "date_range"
         case dryRun = "dry_run"
         case ratePerSec = "rate_per_sec"
+        case currentMailbox = "current_mailbox"
         case totalMessages = "total_messages"
         case scannedMessages = "scanned_messages"
         case spamFound = "spam_found"
