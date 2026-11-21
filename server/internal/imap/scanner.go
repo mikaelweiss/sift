@@ -97,8 +97,7 @@ func (s *Scanner) Pause(id string) (db.ScanJob, error) {
 		return db.ScanJob{}, errors.New("scan job not found")
 	}
 	job.Status = "paused"
-	_ = s.store.SaveScanJob(*job)
-	s.emit(*job)
+	s.persist(*job)
 	return *job, nil
 }
 
@@ -112,8 +111,7 @@ func (s *Scanner) Resume(id string) (db.ScanJob, error) {
 			return db.ScanJob{}, errors.New("scan job not found")
 		}
 		job.Status = "running"
-		_ = s.store.SaveScanJob(*job)
-		s.emit(*job)
+		s.persist(*job)
 		return *job, nil
 	}
 	if s.activeJobID != "" {
@@ -156,8 +154,7 @@ func (s *Scanner) Cancel(id string) (db.ScanJob, error) {
 		return db.ScanJob{}, errors.New("scan job not found")
 	}
 	job.Status = "cancelled"
-	_ = s.store.SaveScanJob(*job)
-	s.emit(*job)
+	s.persist(*job)
 	return *job, nil
 }
 
@@ -794,8 +791,7 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 	if len(pending) == 0 {
 		job.CurrentMailbox = ""
 		job.Status = "applied"
-		_ = s.store.SaveScanJob(job)
-		s.emit(job)
+		s.persist(job)
 		return
 	}
 
@@ -827,14 +823,12 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 	for _, mailbox := range mailboxOrder {
 		if ctx.Err() != nil {
 			job.Status = "cancelled"
-			_ = s.store.SaveScanJob(job)
-			s.emit(job)
+			s.persist(job)
 			return
 		}
 
 		job.CurrentMailbox = mailbox
-		_ = s.store.SaveScanJob(job)
-		s.emit(job)
+		s.persist(job)
 
 		mbox, selErr := c.Select(mailbox, &goimap.SelectOptions{ReadOnly: false}).Wait()
 		if selErr != nil {
@@ -846,8 +840,7 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 		for start := 0; start < len(items); start += applyChunkSize {
 			if ctx.Err() != nil {
 				job.Status = "cancelled"
-				_ = s.store.SaveScanJob(job)
-				s.emit(job)
+				s.persist(job)
 				return
 			}
 			end := start + applyChunkSize
@@ -907,8 +900,7 @@ func (s *Scanner) runApply(ctx context.Context, job db.ScanJob) {
 
 	job.CurrentMailbox = ""
 	job.Status = "applied"
-	_ = s.store.SaveScanJob(job)
-	s.emit(job)
+	s.persist(job)
 	_ = c.Logout().Wait()
 }
 
@@ -923,16 +915,28 @@ func (s *Scanner) waitIfPaused(ctx context.Context) error {
 	return ctx.Err()
 }
 
+// persist frees the active slot before saving a finished job, so a client
+// that sees the final status can start the next job right away.
 func (s *Scanner) persist(job db.ScanJob) {
+	if isFinished(job.Status) {
+		s.clearActive(job.ID)
+	}
 	_ = s.store.SaveScanJob(job)
 	s.emit(job)
+}
+
+func isFinished(status string) bool {
+	switch status {
+	case "completed", "applied", "cancelled", "failed":
+		return true
+	}
+	return false
 }
 
 func (s *Scanner) failJob(job *db.ScanJob, err error) {
 	job.Status = "failed"
 	job.ErrorMsg = err.Error()
-	_ = s.store.SaveScanJob(*job)
-	s.emit(*job)
+	s.persist(*job)
 }
 
 func (s *Scanner) emit(job db.ScanJob) {
