@@ -18,7 +18,9 @@ import (
 
 const (
 	maxDryRunSamples = 50
-	scanBatchSize    = 25
+	scanBatchSize    = 50
+	scanConcurrency  = 10
+	maxFetchBytes    = 65536
 )
 
 type Scanner struct {
@@ -51,8 +53,8 @@ func (s *Scanner) Start(dateRange string, dryRun bool, ratePerSec float64) (db.S
 	if dateRange != "30d" && dateRange != "1y" && dateRange != "all" {
 		dateRange = "30d"
 	}
-	if ratePerSec <= 0 || ratePerSec > 20 {
-		ratePerSec = 5
+	if ratePerSec <= 0 {
+		ratePerSec = 10
 	}
 	job := db.ScanJob{
 		ID:          uuid.NewString(),
@@ -177,6 +179,13 @@ type folderPlan struct {
 	uids        []goimap.UID
 }
 
+type classifiedMsg struct {
+	uid      goimap.UID
+	input    classifier.EmailInput
+	decision classifier.Decision
+	err      error
+}
+
 func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	defer s.clearActive(job.ID)
 
@@ -245,8 +254,11 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 		s.emit(job)
 	}
 
-	minDelay := time.Duration(float64(time.Second) / job.RatePerSec)
-	bodySection := &goimap.FetchItemBodySection{Peek: true}
+	// Fetch only the first 64 KB of each message (headers + text body) to skip multi-MB attachments.
+	bodySection := &goimap.FetchItemBodySection{
+		Peek:    true,
+		Partial: &goimap.SectionPartial{Offset: 0, Size: maxFetchBytes},
+	}
 
 	for _, plan := range plans {
 		job.CurrentMailbox = plan.mailbox
@@ -264,6 +276,12 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 				job.Status = "cancelled"
 				_ = s.store.SaveScanJob(job)
 				s.emit(job)
+				return
+			}
+
+			snap, snapErr := s.classifier.Snapshot()
+			if snapErr != nil {
+				s.failJob(&job, snapErr)
 				return
 			}
 
@@ -286,109 +304,177 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 				return
 			}
 
-			for _, msg := range msgs {
-				if err := s.waitIfPaused(ctx); err != nil {
-					job.Status = "cancelled"
-					_ = s.store.SaveScanJob(job)
-					s.emit(job)
-					return
-				}
+			type workItem struct {
+				uid   goimap.UID
+				input classifier.EmailInput
+			}
+			var work []workItem
+			var maxBatchUID uint32
 
+			for _, msg := range msgs {
 				uid := uint32(msg.UID)
+				if uid > maxBatchUID {
+					maxBatchUID = uid
+				}
 				if !job.DryRun {
 					if exists, _ := s.store.HasEmailEvent(plan.mailbox, mbox.UIDValidity, uid); exists {
 						job.ScannedMessages++
-						job.LastUID = uid
-						job.Checkpoints[plan.mailbox] = uid
 						continue
 					}
 				}
-
-				raw := msg.FindBodySection(bodySection)
+				raw := extractBodyBytes(msg, bodySection)
 				input := ParseRawMessage(mbox.UIDValidity, uid, msg.InternalDate, raw)
-				decision, evalErr := s.classifier.Evaluate(ctx, input)
-				if evalErr != nil {
-					log.Printf("scan %s UID %d classify failed: %v", plan.mailbox, uid, evalErr)
-					job.ScannedMessages++
-					job.LastUID = uid
-					job.Checkpoints[plan.mailbox] = uid
-					continue
-				}
+				work = append(work, workItem{uid: msg.UID, input: input})
+			}
 
-				isSpam := decision.Action == "trash" || decision.Action == "delete"
-				if isSpam {
-					job.SpamFound++
-					if job.Summary == nil {
-						job.Summary = map[string]int{}
-					}
-					job.Summary[decision.CategoryID]++
-					if len(job.Samples) < maxDryRunSamples {
-						job.Samples = append(job.Samples, db.ScanSample{
-							Mailbox:    plan.mailbox,
-							UID:        uid,
-							Sender:     input.SenderEmail,
-							Subject:    input.Subject,
-							EmailDate:  input.EmailDate.UTC().Format(time.RFC3339),
-							CategoryID: decision.CategoryID,
-							Confidence: decision.Confidence,
-							Action:     decision.Action,
-						})
-					}
-				}
+			// Classify batch concurrently across scanConcurrency workers with live throttled SSE progress.
+			results := make([]classifiedMsg, len(work))
+			workCh := make(chan int, len(work))
+			for idx := range work {
+				workCh <- idx
+			}
+			close(workCh)
 
-				if !job.DryRun {
-					actionTaken := decision.Action
-					if isSpam {
-						alreadyInTrash := decision.Action == "trash" && plan.mailbox == trashMailbox
-						if !alreadyInTrash {
-							if actErr := applySpamAction(c, msg.UID, decision.Action, trashMailbox); actErr != nil {
-								log.Printf("scan apply %s %s UID %d failed: %v", decision.Action, plan.mailbox, uid, actErr)
-								actionTaken = "error"
+			var progressMu sync.Mutex
+			lastEmit := time.Now()
+			var wg sync.WaitGroup
+			workerCount := scanConcurrency
+			if len(work) < workerCount {
+				workerCount = len(work)
+			}
+
+			for wIdx := 0; wIdx < workerCount; wIdx++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for idx := range workCh {
+						if ctx.Err() != nil {
+							return
+						}
+						item := work[idx]
+						dec, evalErr := snap.Evaluate(ctx, item.input)
+						results[idx] = classifiedMsg{
+							uid:      item.uid,
+							input:    item.input,
+							decision: dec,
+							err:      evalErr,
+						}
+
+						progressMu.Lock()
+						job.ScannedMessages++
+						if evalErr == nil && (dec.Action == "trash" || dec.Action == "delete") {
+							job.SpamFound++
+							if job.Summary == nil {
+								job.Summary = map[string]int{}
+							}
+							job.Summary[dec.CategoryID]++
+							if len(job.Samples) < maxDryRunSamples {
+								job.Samples = append(job.Samples, db.ScanSample{
+									Mailbox:    plan.mailbox,
+									UID:        uint32(item.uid),
+									Sender:     item.input.SenderEmail,
+									Subject:    item.input.Subject,
+									EmailDate:  item.input.EmailDate.UTC().Format(time.RFC3339),
+									CategoryID: dec.CategoryID,
+									Confidence: dec.Confidence,
+									Action:     dec.Action,
+								})
 							}
 						}
+						if time.Since(lastEmit) >= 300*time.Millisecond {
+							lastEmit = time.Now()
+							snapshotJob := cloneScanJob(job)
+							progressMu.Unlock()
+							s.emit(snapshotJob)
+						} else {
+							progressMu.Unlock()
+						}
+					}
+				}()
+			}
+			wg.Wait()
+
+			if ctx.Err() != nil {
+				job.Status = "cancelled"
+				_ = s.store.SaveScanJob(job)
+				s.emit(job)
+				return
+			}
+
+			if !job.DryRun {
+				var trashUIDs []goimap.UID
+				var deleteUIDs []goimap.UID
+				for _, r := range results {
+					if r.err != nil {
+						log.Printf("scan %s UID %d classify failed: %v", plan.mailbox, r.uid, r.err)
+						continue
+					}
+					if r.decision.Action == "trash" && plan.mailbox != trashMailbox {
+						trashUIDs = append(trashUIDs, r.uid)
+					} else if r.decision.Action == "delete" {
+						deleteUIDs = append(deleteUIDs, r.uid)
+					}
+				}
+
+				trashFailed := false
+				if len(trashUIDs) > 0 {
+					if actErr := applySpamActionBatch(c, trashUIDs, "trash", trashMailbox); actErr != nil {
+						log.Printf("scan batch trash in %s failed: %v", plan.mailbox, actErr)
+						trashFailed = true
+					}
+				}
+				deleteFailed := false
+				if len(deleteUIDs) > 0 {
+					if actErr := applySpamActionBatch(c, deleteUIDs, "delete", trashMailbox); actErr != nil {
+						log.Printf("scan batch delete in %s failed: %v", plan.mailbox, actErr)
+						deleteFailed = true
+					}
+				}
+
+				for _, r := range results {
+					if r.err != nil {
+						continue
+					}
+					actionTaken := r.decision.Action
+					if actionTaken == "trash" && trashFailed && plan.mailbox != trashMailbox {
+						actionTaken = "error"
+					} else if actionTaken == "delete" && deleteFailed {
+						actionTaken = "error"
 					}
 					_ = s.store.RecordEmailEvent(db.EmailEvent{
 						Mailbox:      plan.mailbox,
 						UIDValidity:  mbox.UIDValidity,
-						UID:          uid,
-						MessageID:    input.MessageID,
-						Sender:       input.SenderEmail,
-						SenderDomain: input.SenderDomain,
-						Subject:      input.Subject,
-						EmailDate:    input.EmailDate.UTC().Format(time.RFC3339),
-						CategoryID:   decision.CategoryID,
-						Confidence:   decision.Confidence,
+						UID:          uint32(r.uid),
+						MessageID:    r.input.MessageID,
+						Sender:       r.input.SenderEmail,
+						SenderDomain: r.input.SenderDomain,
+						Subject:      r.input.Subject,
+						EmailDate:    r.input.EmailDate.UTC().Format(time.RFC3339),
+						CategoryID:   r.decision.CategoryID,
+						Confidence:   r.decision.Confidence,
 						Action:       actionTaken,
 						Source:       "backfill",
 					})
-					if (actionTaken == "trash" || actionTaken == "delete") && wAgeWithin7Days(input.EmailDate) && s.abuseSvc != nil {
+					if (actionTaken == "trash" || actionTaken == "delete") && wAgeWithin7Days(r.input.EmailDate) && s.abuseSvc != nil {
 						_ = s.abuseSvc.Consider(ctx, abuse.Candidate{
-							SenderEmail:  input.SenderEmail,
-							SenderDomain: input.SenderDomain,
-							Subject:      input.Subject,
-							RawHeaders:   input.RawHeaders,
-							CategoryID:   decision.CategoryID,
-							Confidence:   decision.Confidence,
-							EmailDate:    input.EmailDate,
+							SenderEmail:  r.input.SenderEmail,
+							SenderDomain: r.input.SenderDomain,
+							Subject:      r.input.Subject,
+							RawHeaders:   r.input.RawHeaders,
+							CategoryID:   r.decision.CategoryID,
+							Confidence:   r.decision.Confidence,
+							EmailDate:    r.input.EmailDate,
 						})
 					}
 				}
-
-				job.ScannedMessages++
-				job.LastUID = uid
-				job.Checkpoints[plan.mailbox] = uid
-				_ = s.store.SaveScanJob(job)
-				s.emit(job)
-
-				select {
-				case <-ctx.Done():
-					job.Status = "cancelled"
-					_ = s.store.SaveScanJob(job)
-					s.emit(job)
-					return
-				case <-time.After(minDelay):
-				}
 			}
+
+			if maxBatchUID > 0 {
+				job.LastUID = maxBatchUID
+				job.Checkpoints[plan.mailbox] = maxBatchUID
+			}
+			_ = s.store.SaveScanJob(job)
+			s.emit(job)
 		}
 	}
 
@@ -439,4 +525,20 @@ func wAgeWithin7Days(emailDate time.Time) bool {
 		return false
 	}
 	return time.Since(emailDate) <= 7*24*time.Hour
+}
+
+func cloneScanJob(j db.ScanJob) db.ScanJob {
+	cp := j
+	cp.Summary = make(map[string]int, len(j.Summary))
+	for k, v := range j.Summary {
+		cp.Summary[k] = v
+	}
+	cp.Checkpoints = make(map[string]uint32, len(j.Checkpoints))
+	for k, v := range j.Checkpoints {
+		cp.Checkpoints[k] = v
+	}
+	if len(j.Samples) > 0 {
+		cp.Samples = append([]db.ScanSample(nil), j.Samples...)
+	}
+	return cp
 }

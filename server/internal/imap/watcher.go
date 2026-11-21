@@ -255,7 +255,10 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		return nil
 	}
 
-	bodySection := &goimap.FetchItemBodySection{Peek: true}
+	bodySection := &goimap.FetchItemBodySection{
+		Peek:    true,
+		Partial: &goimap.SectionPartial{Offset: 0, Size: maxFetchBytes},
+	}
 	var fetchSet goimap.UIDSet
 	for _, u := range newUIDs {
 		fetchSet.AddNum(u)
@@ -278,7 +281,7 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		if exists, _ := w.store.HasEmailEvent(mailbox, uidValidity, uid); exists {
 			continue
 		}
-		raw := msg.FindBodySection(bodySection)
+		raw := extractBodyBytes(msg, bodySection)
 		input := ParseRawMessage(uidValidity, uid, msg.InternalDate, raw)
 
 		decision, err := w.classifier.Evaluate(ctx, input)
@@ -390,9 +393,28 @@ func discoverTrashMailbox(c *imapclient.Client) string {
 	return "Deleted Messages"
 }
 
+func extractBodyBytes(msg *imapclient.FetchMessageBuffer, section *goimap.FetchItemBodySection) []byte {
+	if raw := msg.FindBodySection(section); len(raw) > 0 {
+		return raw
+	}
+	if len(msg.BodySection) > 0 {
+		return msg.BodySection[0].Bytes
+	}
+	return nil
+}
+
 func applySpamAction(c *imapclient.Client, uid goimap.UID, action, trashMailbox string) error {
+	return applySpamActionBatch(c, []goimap.UID{uid}, action, trashMailbox)
+}
+
+func applySpamActionBatch(c *imapclient.Client, uids []goimap.UID, action, trashMailbox string) error {
+	if len(uids) == 0 {
+		return nil
+	}
 	var uidSet goimap.UIDSet
-	uidSet.AddNum(uid)
+	for _, u := range uids {
+		uidSet.AddNum(u)
+	}
 
 	if action == "trash" {
 		if _, err := c.Move(uidSet, trashMailbox).Wait(); err == nil {

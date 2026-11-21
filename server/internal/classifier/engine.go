@@ -47,37 +47,31 @@ type Engine struct {
 	evaluator jev.Evaluator
 }
 
+// Snapshot holds preloaded settings, categories, allowlist, and a reusable Jev client for concurrent batch evaluation.
+type Snapshot struct {
+	cfg       db.AppSettings
+	questions map[string]jev.NoulQuestion
+	catByID   map[string]db.Category
+	allowlist []db.AllowlistEntry
+	eval      jev.Evaluator
+}
+
 func NewEngine(store *db.Store, evaluator jev.Evaluator) *Engine {
 	return &Engine{store: store, evaluator: evaluator}
 }
 
-func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) {
-	senderEmail, senderDomain := in.SenderEmail, in.SenderDomain
-	if senderEmail == "" || senderDomain == "" {
-		parsedEmail, parsedDomain := ParseSenderAddress(in.From)
-		if senderEmail == "" {
-			senderEmail = parsedEmail
-		}
-		if senderDomain == "" {
-			senderDomain = parsedDomain
-		}
-	}
-
-	allowlisted, err := e.store.IsAllowlisted(senderEmail, senderDomain)
-	if err != nil {
-		return Decision{}, fmt.Errorf("check allowlist: %w", err)
-	}
-	if allowlisted {
-		return Decision{Action: "keep", Allowlisted: true}, nil
-	}
-
+func (e *Engine) Snapshot() (*Snapshot, error) {
 	cfg, err := e.store.GetSettings()
 	if err != nil {
-		return Decision{}, fmt.Errorf("load settings: %w", err)
+		return nil, fmt.Errorf("load settings: %w", err)
 	}
 	cats, err := e.store.ListCategories()
 	if err != nil {
-		return Decision{}, fmt.Errorf("load categories: %w", err)
+		return nil, fmt.Errorf("load categories: %w", err)
+	}
+	allowlist, err := e.store.ListAllowlist()
+	if err != nil {
+		return nil, fmt.Errorf("load allowlist: %w", err)
 	}
 
 	questions := make(map[string]jev.NoulQuestion)
@@ -99,16 +93,46 @@ func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) 
 			},
 		}
 	}
-	if len(questions) == 0 {
-		return Decision{Action: "keep"}, nil
-	}
 
 	eval := e.evaluator
-	if eval == nil {
-		if cfg.AIAPIKey == "" {
-			return Decision{Action: "keep"}, nil
-		}
+	if eval == nil && cfg.AIAPIKey != "" {
 		eval = jev.NewClient(cfg.AIProvider, cfg.AIAPIKey, cfg.AIModel)
+	}
+
+	return &Snapshot{
+		cfg:       cfg,
+		questions: questions,
+		catByID:   catByID,
+		allowlist: allowlist,
+		eval:      eval,
+	}, nil
+}
+
+func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) {
+	snap, err := e.Snapshot()
+	if err != nil {
+		return Decision{}, err
+	}
+	return snap.Evaluate(ctx, in)
+}
+
+func (s *Snapshot) Evaluate(ctx context.Context, in EmailInput) (Decision, error) {
+	senderEmail, senderDomain := in.SenderEmail, in.SenderDomain
+	if senderEmail == "" || senderDomain == "" {
+		parsedEmail, parsedDomain := ParseSenderAddress(in.From)
+		if senderEmail == "" {
+			senderEmail = parsedEmail
+		}
+		if senderDomain == "" {
+			senderDomain = parsedDomain
+		}
+	}
+
+	if s.isAllowlisted(senderEmail, senderDomain) {
+		return Decision{Action: "keep", Allowlisted: true}, nil
+	}
+	if len(s.questions) == 0 || s.eval == nil {
+		return Decision{Action: "keep"}, nil
 	}
 
 	snippet := in.BodySnippet
@@ -126,7 +150,7 @@ func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) 
 		"body_snippet":           snippet,
 	}
 
-	scores, err := eval.EvaluateNoul(ctx, state, questions)
+	scores, err := s.eval.EvaluateNoul(ctx, state, s.questions)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -146,12 +170,12 @@ func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) 
 		Confidence: topScore,
 		Scores:     scores,
 	}
-	if c, ok := catByID[topID]; ok {
+	if c, ok := s.catByID[topID]; ok {
 		dec.CategoryName = c.Name
 	}
 
-	if cfg.SpamAction == "delete" {
-		threshold := cfg.DeleteThreshold
+	if s.cfg.SpamAction == "delete" {
+		threshold := s.cfg.DeleteThreshold
 		if threshold <= 0 {
 			threshold = 0.95
 		}
@@ -159,7 +183,7 @@ func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) 
 			dec.Action = "delete"
 		}
 	} else {
-		threshold := cfg.TrashThreshold
+		threshold := s.cfg.TrashThreshold
 		if threshold <= 0 {
 			threshold = 0.85
 		}
@@ -169,6 +193,24 @@ func (e *Engine) Evaluate(ctx context.Context, in EmailInput) (Decision, error) 
 	}
 
 	return dec, nil
+}
+
+func (s *Snapshot) isAllowlisted(senderEmail, senderDomain string) bool {
+	email := strings.ToLower(strings.TrimSpace(senderEmail))
+	domain := strings.ToLower(strings.TrimSpace(senderDomain))
+	for _, entry := range s.allowlist {
+		pat := strings.ToLower(strings.TrimSpace(entry.Pattern))
+		if pat == "" {
+			continue
+		}
+		if entry.Kind == "email" && email == pat {
+			return true
+		}
+		if entry.Kind == "domain" && (domain == pat || strings.HasSuffix(domain, "."+pat)) {
+			return true
+		}
+	}
+	return false
 }
 
 func ParseSenderAddress(fromHeader string) (email, domain string) {

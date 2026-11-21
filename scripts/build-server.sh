@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_DIR="$ROOT_DIR/server"
 OUT_DIR="$ROOT_DIR/macos/EClean/Resources/Binaries"
-VERSION="${ECLEAN_VERSION:-0.1.5}"
+VERSION="${ECLEAN_VERSION:-0.1.6}"
 
 mkdir -p "$OUT_DIR"
 

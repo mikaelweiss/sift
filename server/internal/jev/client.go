@@ -17,6 +17,17 @@ const (
 	OpenRouterBaseURL = "https://openrouter.ai/api/v1/systemone"
 )
 
+var defaultHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		MaxIdleConns:        64,
+		MaxIdleConnsPerHost: 32,
+		MaxConnsPerHost:     32,
+		IdleConnTimeout:     90 * time.Second,
+		ForceAttemptHTTP2:   true,
+	},
+}
+
 type Evaluator interface {
 	EvaluateNoul(ctx context.Context, state any, questions map[string]NoulQuestion) (map[string]float64, error)
 	VerifyKey(ctx context.Context) error
@@ -83,14 +94,12 @@ func NewClient(provider, apiKey, model string) *Client {
 	}
 
 	return &Client{
-		Provider: p,
-		APIKey:   strings.TrimSpace(apiKey),
-		Model:    m,
-		BaseURL:  baseURL,
-		HTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
-		},
-		MaxRetries: 3,
+		Provider:   p,
+		APIKey:     strings.TrimSpace(apiKey),
+		Model:      m,
+		BaseURL:    baseURL,
+		HTTPClient: defaultHTTPClient,
+		MaxRetries: 4,
 		RetryDelay: 500 * time.Millisecond,
 	}
 }
