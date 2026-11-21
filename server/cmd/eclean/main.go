@@ -28,7 +28,7 @@ import (
 	"github.com/mikaelweiss/eclean/server/internal/imap"
 )
 
-var Version = "0.1.7"
+var Version = "0.1.8"
 
 func main() {
 	if len(os.Args) < 2 {

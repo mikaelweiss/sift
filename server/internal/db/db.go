@@ -861,19 +861,41 @@ func (s *Store) HasEmailEvent(mailbox string, uidValidity, uid uint32) (bool, er
 }
 
 func (s *Store) RecordEmailEvent(ev EmailEvent) error {
-	if ev.Mailbox == "" {
-		ev.Mailbox = "INBOX"
+	return s.RecordEmailEvents([]EmailEvent{ev})
+}
+
+func (s *Store) RecordEmailEvents(events []EmailEvent) error {
+	if len(events) == 0 {
+		return nil
 	}
-	if ev.ProcessedAt == "" {
-		ev.ProcessedAt = time.Now().UTC().Format(time.RFC3339)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
 	}
-	_, err := s.db.Exec(
-		`INSERT OR IGNORE INTO email_events(mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.Mailbox, ev.UIDValidity, ev.UID, ev.MessageID, ev.Sender, ev.SenderDomain, ev.Subject,
-		ev.EmailDate, ev.ProcessedAt, ev.CategoryID, ev.Confidence, ev.Action, ev.Source,
-	)
-	return err
+	stmt, err := tx.Prepare(`INSERT OR IGNORE INTO email_events(mailbox, uid_validity, uid, message_id, sender, sender_domain, subject, email_date, processed_at, category_id, confidence, action, source)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, ev := range events {
+		if ev.Mailbox == "" {
+			ev.Mailbox = "INBOX"
+		}
+		if ev.ProcessedAt == "" {
+			ev.ProcessedAt = now
+		}
+		if _, err := stmt.Exec(
+			ev.Mailbox, ev.UIDValidity, ev.UID, ev.MessageID, ev.Sender, ev.SenderDomain, ev.Subject,
+			ev.EmailDate, ev.ProcessedAt, ev.CategoryID, ev.Confidence, ev.Action, ev.Source,
+		); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) DailySpamStats(days int) ([]DailyCategoryStat, error) {

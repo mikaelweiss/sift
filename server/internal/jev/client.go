@@ -3,10 +3,12 @@ package jev
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -17,14 +19,22 @@ const (
 	OpenRouterBaseURL = "https://openrouter.ai/api/v1/systemone"
 )
 
+// MaxConcurrentRequests sizes the connection pool. Callers should not run more Jev calls in parallel than this.
+const MaxConcurrentRequests = 48
+
+// TypeSafe recommends HTTP/1.1 for high request rates because a single HTTP/2 connection caps throughput.
+// A non-nil empty TLSNextProto stops Go from negotiating HTTP/2.
 var defaultHTTPClient = &http.Client{
 	Timeout: 30 * time.Second,
 	Transport: &http.Transport{
-		MaxIdleConns:        64,
-		MaxIdleConnsPerHost: 32,
-		MaxConnsPerHost:     32,
+		Proxy:               http.ProxyFromEnvironment,
+		MaxIdleConns:        MaxConcurrentRequests,
+		MaxIdleConnsPerHost: MaxConcurrentRequests,
+		MaxConnsPerHost:     MaxConcurrentRequests,
 		IdleConnTimeout:     90 * time.Second,
-		ForceAttemptHTTP2:   true,
+		TLSHandshakeTimeout: 10 * time.Second,
+		ForceAttemptHTTP2:   false,
+		TLSNextProto:        map[string]func(string, *tls.Conn) http.RoundTripper{},
 	},
 }
 
@@ -99,7 +109,7 @@ func NewClient(provider, apiKey, model string) *Client {
 		Model:      m,
 		BaseURL:    baseURL,
 		HTTPClient: defaultHTTPClient,
-		MaxRetries: 4,
+		MaxRetries: 7,
 		RetryDelay: 500 * time.Millisecond,
 	}
 }
@@ -143,7 +153,9 @@ func (c *Client) EvaluateNoul(ctx context.Context, state any, questions map[stri
 	var lastErr error
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
-			wait := delay * time.Duration(1<<(attempt-1))
+			// Jitter keeps parallel workers that hit a 429 together from retrying in lockstep.
+			backoff := delay * time.Duration(1<<(attempt-1))
+			wait := backoff/2 + time.Duration(rand.Int64N(int64(backoff)))
 			select {
 			case <-ctx.Done():
 				return nil, ctx.Err()
