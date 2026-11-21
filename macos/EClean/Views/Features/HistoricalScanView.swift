@@ -4,7 +4,6 @@ struct HistoricalScanView: View {
     @Environment(AppState.self) private var appState
     @State private var dateRange = "30d"
     @State private var dryRun = true
-    @State private var ratePerSec = 5.0
     @State private var isSubmitting = false
     @State private var errorMessage: String?
 
@@ -42,13 +41,6 @@ struct HistoricalScanView: View {
                     Toggle("Dry Run (preview only, do not move/delete)", isOn: $dryRun)
                 }
 
-                HStack {
-                    Text("Rate limit: \(Int(ratePerSec)) emails/sec")
-                        .font(.caption)
-                        .frame(width: 160, alignment: .leading)
-                    Slider(value: $ratePerSec, in: 1...15, step: 1)
-                }
-
                 if let job = appState.latestScan {
                     Divider()
                     scanStatusView(job)
@@ -82,11 +74,27 @@ struct HistoricalScanView: View {
             }
             .padding(8)
         }
+        .task(id: appState.latestScan?.status) {
+            while appState.latestScan?.status == "running" {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                if Task.isCancelled { break }
+                await appState.refreshLatestScan()
+            }
+        }
     }
 
     private func scanStatusView(_ job: ScanJob) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 8) {
+                if job.status == "running" {
+                    ProgressView().controlSize(.small)
+                } else if job.status == "completed" {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else if job.status == "failed" {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                }
                 Text("Job Status: \(job.status.capitalized) (\(job.dryRun ? "Dry Run" : "Live"), \(job.dateRange))")
                     .font(.subheadline.weight(.medium))
                 Spacer()
@@ -95,7 +103,18 @@ struct HistoricalScanView: View {
                     .foregroundStyle(.secondary)
             }
 
-            ProgressView(value: job.progressFraction)
+            if job.status == "running" && job.totalMessages == 0 {
+                ProgressView()
+                    .progressViewStyle(.linear)
+            } else {
+                ProgressView(value: job.progressFraction)
+            }
+
+            if job.status == "completed" && job.spamFound == 0 {
+                Text("Checked \(job.scannedMessages) \(job.scannedMessages == 1 ? "email" : "emails") and found no spam matching your enabled categories.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if !job.errorMsg.isEmpty {
                 Text("Error: \(job.errorMsg)")
@@ -138,7 +157,7 @@ struct HistoricalScanView: View {
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            appState.latestScan = try await client.startScan(dateRange: dateRange, dryRun: dryRun, ratePerSec: ratePerSec)
+            appState.latestScan = try await client.startScan(dateRange: dateRange, dryRun: dryRun, ratePerSec: 5.0)
         } catch {
             errorMessage = error.localizedDescription
         }

@@ -17,8 +17,8 @@ func TestStoreLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListCategories: %v", err)
 	}
-	if len(cats) != 6 {
-		t.Fatalf("expected 6 seeded builtin categories, got %d", len(cats))
+	if len(cats) != 7 {
+		t.Fatalf("expected 7 seeded builtin categories, got %d", len(cats))
 	}
 
 	cfg := DefaultSettings()

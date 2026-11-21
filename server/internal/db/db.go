@@ -293,6 +293,12 @@ func (s *Store) migrate() error {
 				)`,
 			},
 		},
+		{
+			version: 2,
+			stmts: []string{
+				`UPDATE settings SET value = 'true' WHERE key = 'abuse_enabled' AND value = 'false'`,
+			},
+		},
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -370,6 +376,14 @@ func (s *Store) seedBuiltinCategories() error {
 			AbuseEligible: true,
 		},
 		{
+			ID:            "adult_explicit",
+			Name:          "Adult & Explicit Content",
+			Description:   "Unsolicited pornographic websites, sexually explicit offers, adult dating spam, escort ads, and NSFW solicitations.",
+			Enabled:       true,
+			Builtin:       true,
+			AbuseEligible: true,
+		},
+		{
 			ID:            "political_fundraising",
 			Name:          "Political & Fundraising",
 			Description:   "Political campaign solicitations, PAC donation drives, petition blasts, and mass fundraising appeals.",
@@ -437,7 +451,7 @@ func DefaultSettings() AppSettings {
 		SpamAction:          "trash",
 		TrashThreshold:      0.85,
 		DeleteThreshold:     0.95,
-		AbuseEnabled:        false,
+		AbuseEnabled:        true,
 		AbuseManualApproval: true,
 		AbuseMinConfidence:  0.95,
 		AbuseCooldownDays:   7,

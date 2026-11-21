@@ -8,10 +8,12 @@ private enum AppTab: Hashable {
 struct MainTabView: View {
     @Environment(AppState.self) private var appState
     @State private var selectedTab: AppTab = .home
-    @State private var showSettings = false
     @State private var showAbuseReview = false
 
     var body: some View {
+        @Bindable var bindableState = appState
+        let hasQueuedDomains = !appState.abuseQueue.isEmpty
+
         NavigationStack {
             TabView(selection: $selectedTab) {
                 HomeView()
@@ -32,33 +34,37 @@ struct MainTabView: View {
                     Button {
                         showAbuseReview = true
                     } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.yellow)
-                            if !appState.abuseQueue.isEmpty {
+                        if hasQueuedDomains {
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.yellow)
                                 Text("\(appState.abuseQueue.count)")
                                     .font(.caption.bold().monospacedDigit())
                                     .padding(.horizontal, 5)
                                     .padding(.vertical, 1)
                                     .background(Color.yellow.opacity(0.25), in: Capsule())
                             }
+                        } else {
+                            Image(systemName: "exclamationmark.triangle")
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    .help("Review domains queued for abuse reporting")
+                    .disabled(!hasQueuedDomains)
+                    .help(hasQueuedDomains ? "Review domains queued for abuse reporting" : "No domains queued for abuse reporting")
 
                     Button {
-                        showSettings = true
+                        appState.showSettings = true
                     } label: {
                         Image(systemName: "gearshape")
                     }
-                    .help("Settings")
+                    .help("Settings (⌘,)")
                 }
             }
             .sheet(isPresented: $showAbuseReview) {
                 AbuseReviewSheet()
                     .environment(appState)
             }
-            .sheet(isPresented: $showSettings) {
+            .sheet(isPresented: $bindableState.showSettings) {
                 SettingsSheet()
                     .environment(appState)
             }

@@ -45,25 +45,36 @@ final class SSEClient {
 
                     var currentEvent = ""
                     var dataLines: [String] = []
+                    var lineBuffer = Data()
 
-                    for try await line in bytes.lines {
+                    // Parse raw bytes directly because AsyncBytes.lines strips empty lines that delimit SSE events.
+                    for try await byte in bytes {
                         if Task.isCancelled { break }
-                        if line.isEmpty {
-                            if !currentEvent.isEmpty && !dataLines.isEmpty {
-                                let payload = dataLines.joined(separator: "\n")
-                                if let parsed = Self.decodeEvent(name: currentEvent, payload: payload) {
-                                    onEvent(parsed)
-                                }
+                        if byte == 0x0A { // '\n'
+                            if lineBuffer.last == 0x0D { // '\r'
+                                lineBuffer.removeLast()
                             }
-                            currentEvent = ""
-                            dataLines = []
-                            continue
-                        }
-                        if line.hasPrefix(":") { continue }
-                        if line.hasPrefix("event:") {
-                            currentEvent = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
-                        } else if line.hasPrefix("data:") {
-                            dataLines.append(line.dropFirst(5).trimmingCharacters(in: .whitespaces))
+                            let line = String(data: lineBuffer, encoding: .utf8) ?? ""
+                            lineBuffer.removeAll(keepingCapacity: true)
+
+                            if line.isEmpty {
+                                if !currentEvent.isEmpty && !dataLines.isEmpty {
+                                    let payload = dataLines.joined(separator: "\n")
+                                    if let parsed = Self.decodeEvent(name: currentEvent, payload: payload) {
+                                        onEvent(parsed)
+                                    }
+                                }
+                                currentEvent = ""
+                                dataLines = []
+                            } else if line.hasPrefix(":") {
+                                continue
+                            } else if line.hasPrefix("event:") {
+                                currentEvent = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+                            } else if line.hasPrefix("data:") {
+                                dataLines.append(line.dropFirst(5).trimmingCharacters(in: .whitespaces))
+                            }
+                        } else {
+                            lineBuffer.append(byte)
                         }
                     }
                 } catch {

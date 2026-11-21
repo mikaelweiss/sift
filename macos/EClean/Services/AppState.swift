@@ -21,6 +21,7 @@ final class AppState {
     var isUpdatingServer: Bool = false
     var updateProgressMessage: String = ""
     var errorMessage: String?
+    var showSettings: Bool = false
 
     private let sseClient = SSEClient()
 
@@ -101,6 +102,13 @@ final class AppState {
         guard let client = apiClient else { return }
         if let items = try? await client.listAbuseQueue() {
             abuseQueue = items
+        }
+    }
+
+    func refreshLatestScan() async {
+        guard let client = apiClient else { return }
+        if let job = try? await client.latestScan() {
+            latestScan = job
         }
     }
 

@@ -24,5 +24,14 @@ struct ECleanApp: App {
             }
         }
         .defaultSize(width: 920, height: 640)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings...") {
+                    appState.showSettings = true
+                }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(appState.connection == nil)
+            }
+        }
     }
 }

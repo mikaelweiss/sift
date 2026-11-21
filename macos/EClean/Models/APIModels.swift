@@ -46,7 +46,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var spamAction: String = "trash"
     var trashThreshold: Double = 0.85
     var deleteThreshold: Double = 0.95
-    var abuseEnabled: Bool = false
+    var abuseEnabled: Bool = true
     var abuseManualApproval: Bool = true
     var abuseMinConfidence: Double = 0.95
     var abuseCooldownDays: Int = 7

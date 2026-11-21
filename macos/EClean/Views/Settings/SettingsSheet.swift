@@ -1,9 +1,19 @@
 import SwiftUI
 
+private enum SettingsSection: String, CaseIterable, Identifiable {
+    case filtering = "Categories"
+    case allowlist = "Allowlist"
+    case credentials = "iCloud & AI"
+    case server = "Server & Macs"
+
+    var id: String { rawValue }
+}
+
 struct SettingsSheet: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
+    @State private var selectedSection: SettingsSection = .filtering
     @State private var draftSettings = AppSettings()
     @State private var imapPasswordInput = ""
     @State private var aiAPIKeyInput = ""
@@ -30,17 +40,32 @@ struct SettingsSheet: View {
 
             Divider()
 
-            TabView {
-                filteringTab
-                    .tabItem { Label("Categories & Action", systemImage: "line.3.horizontal.decrease.circle") }
-                allowlistTab
-                    .tabItem { Label("Allowlist", systemImage: "checkmark.shield") }
-                credentialsTab
-                    .tabItem { Label("iCloud & AI", systemImage: "key") }
-                serverTab
-                    .tabItem { Label("Server & Macs", systemImage: "server.rack") }
+            Picker("Section", selection: $selectedSection) {
+                ForEach(SettingsSection.allCases) { section in
+                    Text(section.rawValue).tag(section)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+
+            Divider()
+
+            Group {
+                switch selectedSection {
+                case .filtering:
+                    filteringTab
+                case .allowlist:
+                    allowlistTab
+                case .credentials:
+                    credentialsTab
+                case .server:
+                    serverTab
+                }
             }
             .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
             if let statusBanner {
                 Divider()

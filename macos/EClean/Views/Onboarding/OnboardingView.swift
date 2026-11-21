@@ -54,6 +54,7 @@ struct OnboardingView: View {
         DraftCategory(id: "cold_sales", name: "Cold Sales & Outreach", description: "Unsolicited B2B pitches and recruiter blasts.", enabled: true),
         DraftCategory(id: "newsletters", name: "Newsletters", description: "Mailing lists, digests, and editorial updates.", enabled: false),
         DraftCategory(id: "crypto_gambling", name: "Crypto & Gambling", description: "Unsolicited crypto schemes and online casino promos.", enabled: true),
+        DraftCategory(id: "adult_explicit", name: "Adult & Explicit Content", description: "Pornographic websites, sexually explicit offers, and adult dating spam.", enabled: true),
         DraftCategory(id: "political_fundraising", name: "Political & Fundraising", description: "Campaign solicitations and donation drives.", enabled: false),
     ]
     @State private var newCategoryName = ""

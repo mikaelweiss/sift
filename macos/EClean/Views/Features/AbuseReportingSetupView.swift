@@ -19,7 +19,7 @@ struct AbuseReportingSetupView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Deterministic Abuse Reporting")
                             .font(.headline)
-                        Text("Look up hosting and registrar abuse@ contacts via RDAP/WHOIS for high-confidence spam and report with redacted headers.")
+                        Text("Queues high-confidence spam domains for your review using RDAP/WHOIS abuse@ contacts. Nothing is emailed until you approve.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -120,6 +120,12 @@ struct AbuseReportingSetupView: View {
         .onAppear {
             draft = appState.settings
             testRecipient = appState.settings.abuseFromEmail
+        }
+        .onChange(of: appState.settings) { _, updated in
+            draft = updated
+            if testRecipient.isEmpty {
+                testRecipient = updated.abuseFromEmail
+            }
         }
     }
 
