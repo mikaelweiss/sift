@@ -300,3 +300,18 @@ func TestNetcraftReporterSendsRawMessage(t *testing.T) {
 		t.Fatal("an unexpected Netcraft reply counted as success")
 	}
 }
+
+func TestFormOnlyAbuseDesksAreSkipped(t *testing.T) {
+	for address, want := range map[string]bool{
+		"abuse@ovh.net": false,
+		"rtr-security-threats@realtimeregister.com": false,
+		"abuse@cloudflare.com":                      false,
+		"abuse@mail.ovhcloud.com":                   false,
+		"abuse@dynadot.com":                         true,
+		"abuse@hosting.international":               true,
+	} {
+		if got := acceptsEmailReports(address); got != want {
+			t.Errorf("acceptsEmailReports(%q) = %v, want %v", address, got, want)
+		}
+	}
+}

@@ -37,6 +37,12 @@ var emailServiceAbuse = map[string]string{
 	"mailgun.com":   "abuse@mailgun.com",
 }
 
+// formOnlyAbuseDomains run abuse desks that discard emailed reports and auto-reply asking for their web form.
+var formOnlyAbuseDomains = map[string]struct{}{
+	"cloudflare.com": {}, "ovh.ca": {}, "ovh.com": {}, "ovh.net": {}, "ovh.us": {}, "ovhcloud.com": {},
+	"realtimeregister.com": {},
+}
+
 // linkSkipDomains appear in legitimate and spam mail alike, so reporting their hosts would only add noise.
 var linkSkipDomains = map[string]struct{}{
 	"facebook.com": {}, "googleapis.com": {}, "gstatic.com": {}, "icloud.com": {}, "instagram.com": {},
@@ -61,7 +67,7 @@ func (r *Resolver) ResolveTargets(ctx context.Context, c Candidate, headers, sen
 			if clean == "" {
 				continue
 			}
-			if kind != KindNetcraft && !isValidEmail(clean) {
+			if kind != KindNetcraft && (!isValidEmail(clean) || !acceptsEmailReports(clean)) {
 				continue
 			}
 			if _, dup := seen[clean]; dup {
@@ -103,6 +109,12 @@ func (r *Resolver) ResolveTargets(ctx context.Context, c Candidate, headers, sen
 		add(KindNetcraft, "Netcraft, which takes down phishing and scam sites", netcraftAddress)
 	}
 	return targets
+}
+
+func acceptsEmailReports(address string) bool {
+	_, domain, _ := strings.Cut(address, "@")
+	_, formOnly := formOnlyAbuseDomains[RootDomain(domain)]
+	return !formOnly
 }
 
 func (r *Resolver) contacts(ctx context.Context, kind, value string) []string {
