@@ -1,5 +1,4 @@
 import Foundation
-import Network
 import Observation
 
 @MainActor
@@ -9,7 +8,7 @@ final class HostDiscovery {
     var sshKeys: [SSHKeyFile] = []
     var isScanning = false
 
-    private var browser: NWBrowser?
+    private var bonjourResolver: BonjourSSHScanner?
     private var bonjourHosts: [DiscoveredHost] = []
     private var tailscaleHosts: [DiscoveredHost] = []
 
@@ -27,8 +26,8 @@ final class HostDiscovery {
     }
 
     func stopDiscovery() {
-        browser?.cancel()
-        browser = nil
+        bonjourResolver?.stop()
+        bonjourResolver = nil
     }
 
     private func rebuildHostList() {
@@ -41,25 +40,15 @@ final class HostDiscovery {
     }
 
     private func startBonjour() {
-        browser?.cancel()
-        let params = NWParameters()
-        params.includePeerToPeer = true
-        let newBrowser = NWBrowser(for: .bonjour(type: "_ssh._tcp", domain: nil), using: params)
-        newBrowser.browseResultsChangedHandler = { [weak self] results, _ in
-            var found: [DiscoveredHost] = []
-            for result in results {
-                if case let .service(name, _, domain, _) = result.endpoint {
-                    let hostAddress = domain == "local." ? "\(name).local" : "\(name).\(domain)"
-                    found.append(DiscoveredHost(name: name, address: hostAddress, source: .bonjour, osHint: nil))
-                }
-            }
+        bonjourResolver?.stop()
+        let scanner = BonjourSSHScanner { [weak self] found in
             Task { @MainActor [weak self] in
-                self?.bonjourHosts = found.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                self?.bonjourHosts = found
                 self?.rebuildHostList()
             }
         }
-        newBrowser.start(queue: DispatchQueue(label: "com.eclean.bonjour"))
-        browser = newBrowser
+        scanner.start()
+        bonjourResolver = scanner
     }
 
     static func scanSSHKeys() -> [SSHKeyFile] {
@@ -87,10 +76,10 @@ final class HostDiscovery {
     private static func discoverTailscalePeers() async -> [DiscoveredHost] {
         await Task.detached {
             let candidates = [
-                "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
-                "/opt/homebrew/bin/tailscale",
                 "/usr/local/bin/tailscale",
+                "/opt/homebrew/bin/tailscale",
                 "/run/current-system/sw/bin/tailscale",
+                "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
             ]
             guard let binary = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
                 return []
@@ -98,15 +87,29 @@ final class HostDiscovery {
             let proc = Process()
             proc.executableURL = URL(fileURLWithPath: binary)
             proc.arguments = ["status", "--json"]
-            let pipe = Pipe()
-            proc.standardOutput = pipe
-            proc.standardError = Pipe()
+            let outPipe = Pipe()
+            let errPipe = Pipe()
+            proc.standardOutput = outPipe
+            proc.standardError = errPipe
             do {
                 try proc.run()
+                // Drain stdout before waitUntilExit to avoid deadlocking when status JSON exceeds the 64KB pipe buffer.
+                let group = DispatchGroup()
+                var outData = Data()
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+                group.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    _ = errPipe.fileHandleForReading.readDataToEndOfFile()
+                    group.leave()
+                }
+                group.wait()
                 proc.waitUntilExit()
                 guard proc.terminationStatus == 0 else { return [] }
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
-                return parseTailscaleStatusJSON(data)
+                return parseTailscaleStatusJSON(outData)
             } catch {
                 return []
             }
@@ -138,5 +141,63 @@ final class HostDiscovery {
             results.append(DiscoveredHost(name: displayName, address: address, source: .tailscale, osHint: peer.OS))
         }
         return results.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+}
+
+private final class BonjourSSHScanner: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+    private let browser = NetServiceBrowser()
+    private var services: [NetService] = []
+    private var resolvedByName: [String: DiscoveredHost] = [:]
+    private let onChange: ([DiscoveredHost]) -> Void
+
+    init(onChange: @escaping ([DiscoveredHost]) -> Void) {
+        self.onChange = onChange
+        super.init()
+        browser.delegate = self
+    }
+
+    func start() {
+        browser.searchForServices(ofType: "_ssh._tcp.", inDomain: "local.")
+    }
+
+    func stop() {
+        browser.stop()
+        for svc in services {
+            svc.stop()
+        }
+        services.removeAll()
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
+        service.delegate = self
+        services.append(service)
+        service.resolve(withTimeout: 5.0)
+    }
+
+    func netServiceBrowser(_ browser: NetServiceBrowser, didRemove service: NetService, moreComing: Bool) {
+        services.removeAll { $0 == service }
+        resolvedByName.removeValue(forKey: service.name)
+        publish()
+    }
+
+    func netServiceDidResolveAddress(_ sender: NetService) {
+        guard let rawHost = sender.hostName?.trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+              !rawHost.isEmpty else {
+            return
+        }
+        resolvedByName[sender.name] = DiscoveredHost(
+            name: sender.name,
+            address: rawHost,
+            source: .bonjour,
+            osHint: nil
+        )
+        publish()
+    }
+
+    private func publish() {
+        let sorted = resolvedByName.values.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        onChange(sorted)
     }
 }

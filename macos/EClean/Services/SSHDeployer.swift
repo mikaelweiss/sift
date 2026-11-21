@@ -195,12 +195,20 @@ enum SSHDeployer {
             _ = try await runSSH(target: target, command: unitCmd)
         } else {
             let plistCmd = """
+            xattr -d com.apple.quarantine "$HOME/.local/bin/eclean" 2>/dev/null || true
             mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs/eclean"
             cat > "$HOME/Library/LaunchAgents/com.eclean.server.plist" <<EOF
             \(launchAgentPlist(binaryPath: "$HOME/.local/bin/eclean", port: target.port, logDir: "$HOME/Library/Logs/eclean"))
             EOF
-            launchctl bootout "gui/$(id -u)/com.eclean.server" 2>/dev/null || true
-            launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/com.eclean.server.plist"
+            UID_NUM="$(id -u)"
+            launchctl bootout "gui/$UID_NUM/com.eclean.server" 2>/dev/null || true
+            launchctl bootout "user/$UID_NUM/com.eclean.server" 2>/dev/null || true
+            if ! launchctl bootstrap "gui/$UID_NUM" "$HOME/Library/LaunchAgents/com.eclean.server.plist" 2>/dev/null; then
+              if ! launchctl bootstrap "user/$UID_NUM" "$HOME/Library/LaunchAgents/com.eclean.server.plist" 2>/dev/null; then
+                pkill -f "$HOME/.local/bin/eclean serve" 2>/dev/null || true
+                nohup "$HOME/.local/bin/eclean" serve --port \(target.port) >"$HOME/Library/Logs/eclean/stdout.log" 2>"$HOME/Library/Logs/eclean/stderr.log" </dev/null &
+              fi
+            fi
             """
             _ = try await runSSH(target: target, command: plistCmd)
         }
@@ -303,9 +311,21 @@ enum SSHDeployer {
             proc.standardOutput = outPipe
             proc.standardError = errPipe
             try proc.run()
+            let group = DispatchGroup()
+            var outData = Data()
+            var errData = Data()
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+                group.leave()
+            }
+            group.wait()
             proc.waitUntilExit()
-            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let outStr = String(data: outData, encoding: .utf8) ?? ""
             let errStr = String(data: errData, encoding: .utf8) ?? ""
             if proc.terminationStatus != 0 {
