@@ -54,6 +54,9 @@ func (e *slowEvaluator) VerifyKey(context.Context) error { return nil }
 
 var testServerCaps = goimap.CapSet{goimap.CapIMAP4rev1: {}, goimap.CapIMAP4rev2: {}}
 
+// trashSpam is how many extra spam messages startIMAPServer puts in Trash.
+var trashSpam = 0
+
 func startIMAPServer(t *testing.T, inbox int) string {
 	t.Helper()
 	mem := imapmemserver.New()
@@ -101,6 +104,20 @@ func startIMAPServer(t *testing.T, inbox int) string {
 			mailbox = "Archive"
 		}
 		cmd := c.Append(mailbox, int64(len(raw)), nil)
+		if _, err := cmd.Write([]byte(raw)); err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < trashSpam; i++ {
+		raw := fmt.Sprintf("From: Spammer <spam%d@example.com>\r\nSubject: SPAM in trash %d\r\nDate: %s\r\nMessage-ID: <trash-%d@example.com>\r\n\r\nBuy now\r\n",
+			i, i, time.Now().Add(-24*time.Hour).Format(time.RFC1123Z), i)
+		cmd := c.Append("Trash", int64(len(raw)), nil)
 		if _, err := cmd.Write([]byte(raw)); err != nil {
 			t.Fatal(err)
 		}
@@ -355,5 +372,21 @@ func TestPermanentDeleteWorksWithoutMoveSupport(t *testing.T) {
 	}
 	if got := mailboxCount(t, run.addr, "INBOX") + mailboxCount(t, run.addr, "Archive"); got != messages-messages/4 {
 		t.Fatalf("INBOX and Archive hold %d, want %d", got, messages-messages/4)
+	}
+}
+
+func TestSpamInTrashMovesToJunk(t *testing.T) {
+	trashSpam = 3
+	t.Cleanup(func() { trashSpam = 0 })
+
+	run := runScan(t, 40, false)
+	if run.job.Status != "completed" {
+		t.Fatalf("status %q: %s", run.job.Status, run.job.ErrorMsg)
+	}
+	if got := mailboxCount(t, run.addr, "Trash"); got != 0 {
+		t.Fatalf("Trash still holds %d spam", got)
+	}
+	if got := mailboxCount(t, run.addr, "Junk"); got != 40/4+3 {
+		t.Fatalf("Junk holds %d, want %d", got, 40/4+3)
 	}
 }

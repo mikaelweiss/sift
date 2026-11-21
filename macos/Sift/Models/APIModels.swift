@@ -119,10 +119,10 @@ struct DailyCategoryStat: Codable, Identifiable, Sendable {
 
     var id: String { "\(day)-\(categoryID)" }
 
+    /// Local midnight of the day, so the chart's local-calendar buckets keep each day in its own period.
     var parsedDate: Date {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter.date(from: day) ?? Date()
     }
 

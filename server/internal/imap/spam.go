@@ -45,9 +45,8 @@ func discoverSpamMailboxes(c *imapclient.Client) spamMailboxes {
 	return boxes
 }
 
-// applySpamAction moves spam into Junk, which trains iCloud's filter. A delete moves first and then expunges the
-// moved copies from Junk. The client is left with source selected. Mail already in Junk or the user's Trash is not
-// moved again.
+// applySpamAction moves spam into Junk, which trains iCloud's filter, including spam sitting in Trash. A delete moves
+// first and then expunges the moved copies from Junk. The client is left with source selected.
 func applySpamAction(c *imapclient.Client, uids []goimap.UID, action, source string, boxes spamMailboxes) error {
 	if len(uids) == 0 {
 		return nil
@@ -59,7 +58,7 @@ func applySpamAction(c *imapclient.Client, uids []goimap.UID, action, source str
 
 	switch action {
 	case "junk":
-		if source == boxes.junk || source == boxes.trash {
+		if source == boxes.junk {
 			return nil
 		}
 		if _, err := c.Move(uidSet, boxes.junk).Wait(); err != nil {

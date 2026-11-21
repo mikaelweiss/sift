@@ -28,7 +28,7 @@ import (
 	"github.com/mikaelweiss/sift/server/internal/imap"
 )
 
-var Version = "0.1.12"
+var Version = "0.1.13"
 
 func main() {
 	if len(os.Args) < 2 {

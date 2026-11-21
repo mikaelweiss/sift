@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVER_DIR="$ROOT_DIR/server"
 OUT_DIR="$ROOT_DIR/macos/Sift/Resources/Binaries"
-VERSION="${SIFT_VERSION:-0.1.12}"
+VERSION="${SIFT_VERSION:-0.1.13}"
 
 mkdir -p "$OUT_DIR"
 

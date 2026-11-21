@@ -10,11 +10,8 @@ struct SpamChart: View {
 
     @State private var selectedDate: Date?
 
-    private static let calendar: Calendar = {
-        var cal = Calendar(identifier: .gregorian)
-        cal.timeZone = TimeZone(identifier: "UTC")!
-        return cal
-    }()
+    // Swift Charts lays out date units in the current calendar, so buckets must use the same one or every bar shifts a period.
+    private static let calendar = Calendar.current
 
     var body: some View {
         let model = ChartModel(stats: stats, categories: categories, rangeDays: rangeDays, calendar: Self.calendar)
@@ -172,7 +169,9 @@ private struct ChartModel {
             rangeStart = earliest ?? now
         }
         let first = calendar.dateInterval(of: bucket.component, for: rangeStart)?.start ?? rangeStart
-        let last = calendar.dateInterval(of: bucket.component, for: now)?.end ?? now
+        // The server groups days by UTC date, which can run a day ahead of the local date in the evening.
+        let newest = max(now, stats.map(\.parsedDate).max() ?? now)
+        let last = calendar.dateInterval(of: bucket.component, for: newest)?.end ?? newest
         self.domain = first...last
     }
 
