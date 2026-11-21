@@ -22,7 +22,8 @@ const (
 	maxDryRunSamples = 50
 	scanBatchSize    = 50
 	scanConcurrency  = jev.MaxConcurrentRequests
-	scanWindow       = 4
+	scanFetchConns   = 8
+	scanWindow       = 2 * scanFetchConns
 	maxFetchBytes    = 65536
 )
 
@@ -215,9 +216,8 @@ func (s *Scanner) clearActive(id string) {
 }
 
 type folderPlan struct {
-	mailbox     string
-	uidValidity uint32
-	uids        []goimap.UID
+	mailbox string
+	uids    []goimap.UID
 }
 
 type classifiedMsg struct {
@@ -229,10 +229,13 @@ type classifiedMsg struct {
 
 type scanBatch struct {
 	mailbox     string
+	uids        []goimap.UID
 	uidValidity uint32
 	maxUID      uint32
 	snap        *classifier.Snapshot
 	msgs        []classifiedMsg
+	err         error
+	fetched     chan struct{}
 	done        sync.WaitGroup
 }
 
@@ -241,7 +244,7 @@ type classifyTask struct {
 	idx   int
 }
 
-// scanProgress guards the job shared by the IMAP loop and the classify workers.
+// scanProgress guards the job shared by the IMAP loop, the fetchers, and the classify workers.
 type scanProgress struct {
 	mu       sync.Mutex
 	job      db.ScanJob
@@ -261,8 +264,61 @@ var scanBodySection = &goimap.FetchItemBodySection{
 	Partial: &goimap.SectionPartial{Offset: 0, Size: maxFetchBytes},
 }
 
-// runJob keeps a single goroutine on the IMAP connection so fetches and moves never interleave,
-// while a shared worker pool classifies several batches ahead of it.
+// fetchConn is a read-only IMAP session. iCloud serves message bodies slowly per session
+// but scales almost linearly with parallel sessions.
+type fetchConn struct {
+	c           *imapclient.Client
+	selected    string
+	uidValidity uint32
+}
+
+func (f *fetchConn) selectMailbox(mailbox string) error {
+	if f.selected == mailbox {
+		return nil
+	}
+	data, err := f.c.Select(mailbox, &goimap.SelectOptions{ReadOnly: true}).Wait()
+	if err != nil {
+		f.selected = ""
+		return err
+	}
+	f.selected, f.uidValidity = mailbox, data.UIDValidity
+	return nil
+}
+
+func dialFetchConns(cfg db.AppSettings, n int) ([]*fetchConn, error) {
+	conns := make([]*fetchConn, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := range conns {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := dialScanClient(cfg.IMAPHost, cfg.IMAPPort, cfg.IMAPUsername, cfg.IMAPPassword, nil)
+			if err != nil {
+				errs[i] = err
+				return
+			}
+			conns[i] = &fetchConn{c: c}
+		}()
+	}
+	wg.Wait()
+
+	var ok []*fetchConn
+	for i, f := range conns {
+		if f != nil {
+			ok = append(ok, f)
+		} else {
+			log.Printf("scan fetch connection %d failed: %v", i, errs[i])
+		}
+	}
+	if len(ok) == 0 {
+		return nil, errs[0]
+	}
+	return ok, nil
+}
+
+// runJob pulls message bodies over a pool of read-only sessions and classifies them as they arrive.
+// The primary session alone moves and deletes, in batch order, so checkpoints stay monotonic.
 func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	defer s.clearActive(job.ID)
 
@@ -285,8 +341,22 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 		fail(err)
 		return
 	}
+
+	type dialResult struct {
+		conns []*fetchConn
+		err   error
+	}
+	poolReady := make(chan dialResult, 1)
+	go func() {
+		conns, err := dialFetchConns(cfg, scanFetchConns)
+		poolReady <- dialResult{conns, err}
+	}()
+
 	c, err := dialScanClient(cfg.IMAPHost, cfg.IMAPPort, cfg.IMAPUsername, cfg.IMAPPassword, nil)
 	if err != nil {
+		if pool := <-poolReady; pool.err == nil {
+			closeFetchConns(pool.conns)
+		}
 		fail(err)
 		return
 	}
@@ -294,45 +364,20 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 
 	trashMailbox := discoverTrashMailbox(c)
 	mailboxes := DiscoverMailboxes(c, true)
-	criteria := buildSearchCriteria(job.DateRange, time.Now().UTC())
 
-	var plans []folderPlan
-	totalAcrossFolders := 0
-	for _, mailbox := range mailboxes {
-		if ctx.Err() != nil {
-			markCancelled()
-			return
-		}
-		mbox, selErr := c.Select(mailbox, &goimap.SelectOptions{ReadOnly: true}).Wait()
-		if selErr != nil {
-			log.Printf("scan skip folder %q: %v", mailbox, selErr)
-			continue
-		}
-		searchData, searchErr := c.UIDSearch(criteria, nil).Wait()
-		if searchErr != nil {
-			log.Printf("scan search folder %q failed: %v", mailbox, searchErr)
-			continue
-		}
-		allUIDs := searchData.AllUIDs()
-		sort.Slice(allUIDs, func(i, j int) bool { return allUIDs[i] < allUIDs[j] })
-		totalAcrossFolders += len(allUIDs)
-
-		lastFolderUID := job.Checkpoints[mailbox]
-		var pending []goimap.UID
-		for _, u := range allUIDs {
-			if uint32(u) > lastFolderUID {
-				pending = append(pending, u)
-			}
-		}
-		if len(pending) > 0 {
-			plans = append(plans, folderPlan{
-				mailbox:     mailbox,
-				uidValidity: mbox.UIDValidity,
-				uids:        pending,
-			})
-		}
+	pool := <-poolReady
+	if pool.err != nil {
+		fail(pool.err)
+		return
 	}
+	fetchers := pool.conns
+	defer closeFetchConns(fetchers)
 
+	if ctx.Err() != nil {
+		markCancelled()
+		return
+	}
+	plans, totalAcrossFolders := planFolders(fetchers, mailboxes, buildSearchCriteria(job.DateRange, time.Now().UTC()), job.Checkpoints)
 	if job.TotalMessages == 0 || totalAcrossFolders > job.TotalMessages {
 		s.persist(progress.update(func(j *db.ScanJob) { j.TotalMessages = totalAcrossFolders }))
 	}
@@ -354,15 +399,31 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 		workers.Wait()
 	}()
 
-	for _, plan := range plans {
-		if err := s.scanFolder(ctx, c, plan, job, trashMailbox, tasks, progress); err != nil {
-			if ctx.Err() != nil {
-				markCancelled()
-			} else {
-				fail(err)
+	requests := make(chan *scanBatch, scanWindow)
+	var fetching sync.WaitGroup
+	for _, f := range fetchers {
+		fetching.Add(1)
+		go func() {
+			defer fetching.Done()
+			for b := range requests {
+				s.fetchBatch(ctx, f, b, job.DryRun, tasks, progress)
 			}
-			return
+		}()
+	}
+	stopFetching := func() {
+		close(requests)
+		fetching.Wait()
+	}
+
+	err = s.dispatchAndFinish(ctx, c, plans, job, trashMailbox, requests, progress)
+	stopFetching()
+	if err != nil {
+		if ctx.Err() != nil {
+			markCancelled()
+		} else {
+			fail(err)
 		}
+		return
 	}
 
 	s.persist(progress.update(func(j *db.ScanJob) {
@@ -372,88 +433,151 @@ func (s *Scanner) runJob(ctx context.Context, job db.ScanJob) {
 	_ = c.Logout().Wait()
 }
 
-func (s *Scanner) scanFolder(ctx context.Context, c *imapclient.Client, plan folderPlan, job db.ScanJob, trashMailbox string, tasks chan<- classifyTask, progress *scanProgress) error {
-	s.persist(progress.update(func(j *db.ScanJob) { j.CurrentMailbox = plan.mailbox }))
-
-	mbox, selErr := c.Select(plan.mailbox, &goimap.SelectOptions{ReadOnly: job.DryRun}).Wait()
-	if selErr != nil {
-		log.Printf("scan re-select %q failed: %v", plan.mailbox, selErr)
-		return nil
+func closeFetchConns(conns []*fetchConn) {
+	for _, f := range conns {
+		_ = f.c.Logout().Wait()
+		_ = f.c.Close()
 	}
+}
 
+// planFolders searches every mailbox in parallel across the fetch sessions.
+func planFolders(fetchers []*fetchConn, mailboxes []string, criteria *goimap.SearchCriteria, checkpoints map[string]uint32) ([]folderPlan, int) {
+	found := make([][]goimap.UID, len(mailboxes))
+	next := make(chan int, len(mailboxes))
+	for i := range mailboxes {
+		next <- i
+	}
+	close(next)
+	var wg sync.WaitGroup
+	for _, f := range fetchers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				if err := f.selectMailbox(mailboxes[i]); err != nil {
+					log.Printf("scan skip folder %q: %v", mailboxes[i], err)
+					continue
+				}
+				data, err := f.c.UIDSearch(criteria, nil).Wait()
+				if err != nil {
+					log.Printf("scan search folder %q failed: %v", mailboxes[i], err)
+					continue
+				}
+				found[i] = data.AllUIDs()
+			}
+		}()
+	}
+	wg.Wait()
+
+	var plans []folderPlan
+	total := 0
+	for i, uids := range found {
+		sort.Slice(uids, func(a, b int) bool { return uids[a] < uids[b] })
+		total += len(uids)
+		var pending []goimap.UID
+		for _, u := range uids {
+			if uint32(u) > checkpoints[mailboxes[i]] {
+				pending = append(pending, u)
+			}
+		}
+		if len(pending) > 0 {
+			plans = append(plans, folderPlan{mailbox: mailboxes[i], uids: pending})
+		}
+	}
+	return plans, total
+}
+
+func (s *Scanner) dispatchAndFinish(ctx context.Context, c *imapclient.Client, plans []folderPlan, job db.ScanJob, trashMailbox string, requests chan<- *scanBatch, progress *scanProgress) error {
+	actions := &actionConn{c: c}
 	var inFlight []*scanBatch
-	for start := 0; start < len(plan.uids); start += scanBatchSize {
-		if err := s.waitIfPaused(ctx); err != nil {
-			return err
-		}
-		end := min(start+scanBatchSize, len(plan.uids))
-		batch, err := s.fetchBatch(c, plan.mailbox, mbox.UIDValidity, plan.uids[start:end], job.DryRun, progress)
-		if err != nil {
-			return err
-		}
-		batch.done.Add(len(batch.msgs))
-		for idx := range batch.msgs {
+	for _, plan := range plans {
+		for start := 0; start < len(plan.uids); start += scanBatchSize {
+			if len(inFlight) >= scanWindow {
+				if err := s.finishBatch(ctx, actions, inFlight[0], job, trashMailbox, progress); err != nil {
+					return err
+				}
+				inFlight = inFlight[1:]
+			}
+			end := min(start+scanBatchSize, len(plan.uids))
+			b := &scanBatch{mailbox: plan.mailbox, uids: plan.uids[start:end], fetched: make(chan struct{})}
 			select {
-			case tasks <- classifyTask{batch: batch, idx: idx}:
+			case requests <- b:
 			case <-ctx.Done():
 				return ctx.Err()
 			}
-		}
-		inFlight = append(inFlight, batch)
-		if len(inFlight) >= scanWindow {
-			if err := s.finishBatch(ctx, c, inFlight[0], job, trashMailbox, progress); err != nil {
-				return err
-			}
-			inFlight = inFlight[1:]
+			inFlight = append(inFlight, b)
 		}
 	}
-	for _, batch := range inFlight {
-		if err := s.finishBatch(ctx, c, batch, job, trashMailbox, progress); err != nil {
+	for _, b := range inFlight {
+		if err := s.finishBatch(ctx, actions, b, job, trashMailbox, progress); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (s *Scanner) fetchBatch(c *imapclient.Client, mailbox string, uidValidity uint32, uids []goimap.UID, dryRun bool, progress *scanProgress) (*scanBatch, error) {
+func (s *Scanner) fetchBatch(ctx context.Context, f *fetchConn, b *scanBatch, dryRun bool, tasks chan<- classifyTask, progress *scanProgress) {
+	defer close(b.fetched)
+	if err := s.waitIfPaused(ctx); err != nil {
+		b.err = err
+		return
+	}
 	snap, err := s.classifier.Snapshot()
 	if err != nil {
-		return nil, err
+		b.err = err
+		return
 	}
+	b.snap = snap
+	if err := f.selectMailbox(b.mailbox); err != nil {
+		b.err = fmt.Errorf("select %s: %w", b.mailbox, err)
+		return
+	}
+	b.uidValidity = f.uidValidity
+
 	var fetchSet goimap.UIDSet
-	for _, u := range uids {
+	for _, u := range b.uids {
 		fetchSet.AddNum(u)
 	}
-	msgs, err := c.Fetch(fetchSet, &goimap.FetchOptions{
+	msgs, err := f.c.Fetch(fetchSet, &goimap.FetchOptions{
 		UID:          true,
 		InternalDate: true,
 		BodySection:  []*goimap.FetchItemBodySection{scanBodySection},
 	}).Collect()
 	if err != nil {
-		return nil, fmt.Errorf("fetch batch in %s: %w", mailbox, err)
+		b.err = fmt.Errorf("fetch batch in %s: %w", b.mailbox, err)
+		return
 	}
 
-	batch := &scanBatch{mailbox: mailbox, uidValidity: uidValidity, snap: snap}
 	alreadyProcessed := 0
 	for _, msg := range msgs {
 		uid := uint32(msg.UID)
-		batch.maxUID = max(batch.maxUID, uid)
+		b.maxUID = max(b.maxUID, uid)
 		if !dryRun {
-			if exists, _ := s.store.HasEmailEvent(mailbox, uidValidity, uid); exists {
+			if exists, _ := s.store.HasEmailEvent(b.mailbox, b.uidValidity, uid); exists {
 				alreadyProcessed++
 				continue
 			}
 		}
 		raw := extractBodyBytes(msg, scanBodySection)
-		batch.msgs = append(batch.msgs, classifiedMsg{
+		b.msgs = append(b.msgs, classifiedMsg{
 			uid:   msg.UID,
-			input: ParseRawMessage(uidValidity, uid, msg.InternalDate, raw),
+			input: ParseRawMessage(b.uidValidity, uid, msg.InternalDate, raw),
 		})
 	}
 	if alreadyProcessed > 0 {
 		progress.update(func(j *db.ScanJob) { j.ScannedMessages += alreadyProcessed })
 	}
-	return batch, nil
+
+	b.done.Add(len(b.msgs))
+	for idx := range b.msgs {
+		select {
+		case tasks <- classifyTask{batch: b, idx: idx}:
+		case <-ctx.Done():
+			b.err = ctx.Err()
+			b.done.Add(idx - len(b.msgs))
+			return
+		}
+	}
 }
 
 func (s *Scanner) classify(ctx context.Context, t classifyTask, progress *scanProgress) {
@@ -497,7 +621,31 @@ func (s *Scanner) classify(ctx context.Context, t classifyTask, progress *scanPr
 	s.emit(snapshot)
 }
 
-func (s *Scanner) finishBatch(ctx context.Context, c *imapclient.Client, b *scanBatch, job db.ScanJob, trashMailbox string, progress *scanProgress) error {
+// actionConn is the primary session, selected read-write on whichever mailbox the next batch came from.
+type actionConn struct {
+	c           *imapclient.Client
+	selected    string
+	uidValidity uint32
+}
+
+func (a *actionConn) selectMailbox(mailbox string) error {
+	if a.selected == mailbox {
+		return nil
+	}
+	data, err := a.c.Select(mailbox, &goimap.SelectOptions{ReadOnly: false}).Wait()
+	if err != nil {
+		a.selected = ""
+		return err
+	}
+	a.selected, a.uidValidity = mailbox, data.UIDValidity
+	return nil
+}
+
+func (s *Scanner) finishBatch(ctx context.Context, actions *actionConn, b *scanBatch, job db.ScanJob, trashMailbox string, progress *scanProgress) error {
+	<-b.fetched
+	if b.err != nil {
+		return b.err
+	}
 	b.done.Wait()
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -505,9 +653,16 @@ func (s *Scanner) finishBatch(ctx context.Context, c *imapclient.Client, b *scan
 	if job.DryRun {
 		s.recordDryRunBatch(job.ID, b)
 	} else {
-		s.applyBatch(ctx, c, b, trashMailbox)
+		if err := actions.selectMailbox(b.mailbox); err != nil {
+			return fmt.Errorf("select %s for changes: %w", b.mailbox, err)
+		}
+		if actions.uidValidity != b.uidValidity {
+			return fmt.Errorf("%s changed during the scan (UIDVALIDITY %d, was %d)", b.mailbox, actions.uidValidity, b.uidValidity)
+		}
+		s.applyBatch(ctx, actions.c, b, trashMailbox)
 	}
 	s.persist(progress.update(func(j *db.ScanJob) {
+		j.CurrentMailbox = b.mailbox
 		if b.maxUID > 0 {
 			j.LastUID = b.maxUID
 			j.Checkpoints[b.mailbox] = b.maxUID

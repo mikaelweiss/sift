@@ -82,8 +82,10 @@ func startIMAPServer(t *testing.T, inbox int) string {
 	if err := c.Create("INBOX", nil).Wait(); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Create("Trash", nil).Wait(); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"Archive", "Trash"} {
+		if err := c.Create(name, nil).Wait(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for i := 0; i < inbox; i++ {
 		subject := fmt.Sprintf("Hello %d", i)
@@ -92,7 +94,11 @@ func startIMAPServer(t *testing.T, inbox int) string {
 		}
 		raw := fmt.Sprintf("From: Sender <s%d@example.com>\r\nTo: user@example.com\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: <%d@example.com>\r\nContent-Type: text/plain\r\n\r\nBody %d\r\n",
 			i, subject, time.Now().Add(-48*time.Hour).Format(time.RFC1123Z), i, i)
-		cmd := c.Append("INBOX", int64(len(raw)), nil)
+		mailbox := "INBOX"
+		if i%3 == 0 {
+			mailbox = "Archive"
+		}
+		cmd := c.Append(mailbox, int64(len(raw)), nil)
 		if _, err := cmd.Write([]byte(raw)); err != nil {
 			t.Fatal(err)
 		}
@@ -182,11 +188,12 @@ func TestScanDryRunClassifiesEveryMessageConcurrently(t *testing.T) {
 	if job.ScannedMessages != messages || job.SpamFound != messages/4 {
 		t.Fatalf("scanned %d spam %d, want %d and %d", job.ScannedMessages, job.SpamFound, messages, messages/4)
 	}
-	if job.Checkpoints["INBOX"] != messages {
-		t.Fatalf("checkpoint %d, want %d", job.Checkpoints["INBOX"], messages)
+	archived := uint32((messages + 2) / 3)
+	if job.Checkpoints["Archive"] != archived || job.Checkpoints["INBOX"] != messages-archived {
+		t.Fatalf("checkpoints %v, want Archive %d and INBOX %d", job.Checkpoints, archived, messages-archived)
 	}
-	if got := mailboxCount(t, addr, "INBOX"); got != messages {
-		t.Fatalf("dry run changed INBOX to %d messages", got)
+	if got := mailboxCount(t, addr, "INBOX") + mailboxCount(t, addr, "Archive"); got != messages {
+		t.Fatalf("dry run left %d messages, want %d", got, messages)
 	}
 	if eval.peak.Load() < scanConcurrency/2 {
 		t.Fatalf("peak Jev concurrency %d, want close to %d", eval.peak.Load(), scanConcurrency)
@@ -206,7 +213,7 @@ func TestScanLiveMovesSpamToTrash(t *testing.T) {
 	if got := mailboxCount(t, addr, "Trash"); got != messages/4 {
 		t.Fatalf("Trash has %d messages, want %d", got, messages/4)
 	}
-	if got := mailboxCount(t, addr, "INBOX"); got != messages-messages/4 {
-		t.Fatalf("INBOX has %d messages, want %d", got, messages-messages/4)
+	if got := mailboxCount(t, addr, "INBOX") + mailboxCount(t, addr, "Archive"); got != messages-messages/4 {
+		t.Fatalf("INBOX and Archive hold %d messages, want %d", got, messages-messages/4)
 	}
 }
