@@ -29,5 +29,17 @@
         sparkle:edSignature="KAPy6m5sj2+32Sp52EcgpmJh1StaeaaLiv7vbBfp6AZoxFVQKDwJm+86atrywv8difUdx3tr/LIadJ6LoJO0CA==" length="23907878"
         type="application/octet-stream"/>
     </item>
+    <item>
+      <title>Version 0.1.17</title>
+      <pubDate>Sat, 28 Nov 2026 02:11:45 +0000</pubDate>
+      <sparkle:version>18</sparkle:version>
+      <sparkle:shortVersionString>0.1.17</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/mikaelweiss/sift/releases/tag/v0.1.17</sparkle:releaseNotesLink>
+      <enclosure
+        url="https://github.com/mikaelweiss/sift/releases/download/v0.1.17/Sift.dmg"
+        sparkle:edSignature="ifvG7sW2yI5HeynorcWh9brGY/BODPdpvrkysxa/8Zcs0shjvKh9kpSeO3t2dQ7+FhuqcFeucoyKAKlDocSkCg==" length="24117529"
+        type="application/octet-stream"/>
+    </item>
   </channel>
 </rss>
