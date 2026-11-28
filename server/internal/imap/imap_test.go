@@ -17,6 +17,9 @@ func TestParseRawMessageMultipartHTMLAndHeaders(t *testing.T) {
 		"Subject: =?UTF-8?Q?50%25_Off_Today?=",
 		"Date: Fri, 20 Nov 2026 14:00:00 +0000",
 		"Message-ID: <msg-1@promo.example.com>",
+		"In-Reply-To: <sift-abuse-123@icloud.com>",
+		"References: <sift-abuse-123@icloud.com>",
+		"Auto-Submitted: auto-replied",
 		"Authentication-Results: mx.icloud.com; spf=pass; dkim=fail",
 		"MIME-Version: 1.0",
 		"Content-Type: multipart/alternative; boundary=BOUND",
@@ -43,6 +46,9 @@ func TestParseRawMessageMultipartHTMLAndHeaders(t *testing.T) {
 	}
 	if in.EmailDate.Year() != 2026 {
 		t.Fatalf("unexpected email date: %v", in.EmailDate)
+	}
+	if in.InReplyTo != "<sift-abuse-123@icloud.com>" || in.AutoSubmitted != "auto-replied" {
+		t.Fatalf("reply headers not parsed: in_reply_to=%q auto_submitted=%q", in.InReplyTo, in.AutoSubmitted)
 	}
 }
 

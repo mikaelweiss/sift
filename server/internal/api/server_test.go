@@ -103,4 +103,52 @@ func TestPairingAuthAndCRUD(t *testing.T) {
 	if _, leaked := saved["imap_password"]; leaked {
 		t.Fatalf("imap_password must not be returned by API")
 	}
+
+	// Verify health reports banned_count, history returns bans + learned form-only domains, and delete works.
+	_, _ = store.RecordAbuseReply(db.AbuseReply{
+		MessageID:       "ban-1@shockhosting.com",
+		ReportedDomain:  "mostbau.com",
+		Responder:       "abuse@shockhosting.com",
+		ResponderDomain: "shockhosting.com",
+		Subject:         "[Abuse Report] Unsolicited bulk email from mostbau.com",
+		Snippet:         "The reported server has been suspended.",
+		Outcome:         "action_taken",
+	})
+	_ = store.AddFormOnlyAbuseDomain("example-form.test", "learned")
+
+	healthResp, err := http.Get(ts.URL + "/api/health")
+	if err != nil || healthResp.StatusCode != http.StatusOK {
+		t.Fatalf("health failed: %v", err)
+	}
+	var healthBody map[string]any
+	_ = json.NewDecoder(healthResp.Body).Decode(&healthBody)
+	if healthBody["banned_count"] != float64(1) {
+		t.Fatalf("expected banned_count=1, got %+v", healthBody["banned_count"])
+	}
+
+	histReq, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/abuse/history", nil)
+	histReq.Header.Set("Authorization", "Bearer "+st.Token)
+	histResp, err := http.DefaultClient.Do(histReq)
+	if err != nil || histResp.StatusCode != http.StatusOK {
+		t.Fatalf("history failed: %v", err)
+	}
+	var histBody struct {
+		BannedCount     int             `json:"banned_count"`
+		Bans            []db.AbuseReply `json:"bans"`
+		FormOnlyDomains []string        `json:"form_only_domains"`
+	}
+	_ = json.NewDecoder(histResp.Body).Decode(&histBody)
+	if histBody.BannedCount != 1 || len(histBody.Bans) != 1 || len(histBody.FormOnlyDomains) != 1 {
+		t.Fatalf("unexpected history response: %+v", histBody)
+	}
+
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/abuse/form-only/example-form.test", nil)
+	delReq.Header.Set("Authorization", "Bearer "+st.Token)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil || delResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete form-only failed: %v", err)
+	}
+	if remaining, _ := store.ListFormOnlyAbuseDomains(); len(remaining) != 0 {
+		t.Fatalf("expected form-only domain deleted, got %v", remaining)
+	}
 }

@@ -314,9 +314,17 @@ final class APIClient {
         try await send("POST", path: "/api/mailing-lists/unsubscribe", body: ["sender": sender])
     }
 
-    func abuseHistory() async throws -> [AbuseHistoryEntry] {
-        let resp: AbuseHistoryResponse = try await send("GET", path: "/api/abuse/history")
-        return resp.entries
+    func abuseHistory() async throws -> AbuseHistoryResponse {
+        try await send("GET", path: "/api/abuse/history")
+    }
+
+    func syncAbuseReplies() async throws -> AbuseSyncResponse {
+        try await send("POST", path: "/api/abuse/sync")
+    }
+
+    func deleteFormOnlyDomain(_ domain: String) async throws {
+        let encoded = domain.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? domain
+        _ = try await sendRaw("DELETE", path: "/api/abuse/form-only/\(encoded)")
     }
 
     func listAbuseQueue() async throws -> [AbuseQueueItem] {

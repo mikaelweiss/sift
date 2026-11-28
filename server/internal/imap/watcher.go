@@ -143,6 +143,7 @@ func (w *Watcher) runSession(ctx context.Context, cfg db.AppSettings) error {
 	if err := w.sweepMailboxes(ctx, c, watchMailboxes, boxes); err != nil {
 		return err
 	}
+	go MaybeBackfillAbuseReplies(ctx, w.store, w.abuseSvc)
 
 	for {
 		if ctx.Err() != nil {
@@ -283,6 +284,32 @@ func (w *Watcher) processNewMessages(ctx context.Context, c *imapclient.Client, 
 		}
 		raw := extractBodyBytes(msg, bodySection)
 		input := ParseRawMessage(uidValidity, uid, msg.InternalDate, raw)
+
+		if w.abuseSvc != nil {
+			handled, _, repErr := w.abuseSvc.HandleIncoming(ctx, replyInputFromEmail(input))
+			if repErr != nil {
+				log.Printf("abuse reply check %s UID %d failed: %v", mailbox, uid, repErr)
+			} else if handled {
+				actionTaken := "abuse_reply"
+				if actErr := archiveMessages(c, []goimap.UID{msg.UID}, mailbox, boxes); actErr != nil {
+					log.Printf("archive abuse reply %s UID %d failed: %v", mailbox, uid, actErr)
+					actionTaken = "error"
+				}
+				_ = w.store.RecordEmailEvent(db.EmailEvent{
+					Mailbox:      mailbox,
+					UIDValidity:  uidValidity,
+					UID:          uid,
+					MessageID:    input.MessageID,
+					Sender:       input.SenderEmail,
+					SenderDomain: input.SenderDomain,
+					Subject:      input.Subject,
+					EmailDate:    input.EmailDate.UTC().Format(time.RFC3339),
+					Action:       actionTaken,
+					Source:       "realtime",
+				})
+				continue
+			}
+		}
 
 		decision, err := w.classifier.Evaluate(ctx, input)
 		if err != nil {

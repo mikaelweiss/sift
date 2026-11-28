@@ -23,6 +23,15 @@ final class AppState {
     var updateProgressMessage: String = ""
     var errorMessage: String?
     var showSettings: Bool = false
+    var showAbuseReview: Bool = false
+    var abuseReviewShowSent: Bool = false
+
+    var bannedCount: Int { health?.bannedCount ?? 0 }
+
+    func openAbuseReview(showSent: Bool = false) {
+        abuseReviewShowSent = showSent
+        showAbuseReview = true
+    }
 
     private let sseClient = SSEClient()
     private var healthMonitorTask: Task<Void, Never>?

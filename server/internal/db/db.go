@@ -154,8 +154,23 @@ type AbuseQueueItem struct {
 
 type AbuseDelivery struct {
 	AbuseTarget
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	OK        bool   `json:"ok"`
+	Error     string `json:"error,omitempty"`
+}
+
+type AbuseReply struct {
+	ID              int64  `json:"id"`
+	MessageID       string `json:"message_id"`
+	ReportedDomain  string `json:"reported_domain"`
+	HistoryID       int64  `json:"history_id,omitempty"`
+	Responder       string `json:"responder"`
+	ResponderDomain string `json:"responder_domain"`
+	TargetAddress   string `json:"target_address,omitempty"`
+	Subject         string `json:"subject"`
+	Snippet         string `json:"snippet"`
+	Outcome         string `json:"outcome"`
+	ReceivedAt      string `json:"received_at"`
 }
 
 type AbuseHistoryEntry struct {
@@ -167,6 +182,7 @@ type AbuseHistoryEntry struct {
 	Subject    string          `json:"subject"`
 	Sender     string          `json:"sender"`
 	Deliveries []AbuseDelivery `json:"deliveries"`
+	Replies    []AbuseReply    `json:"replies,omitempty"`
 	Status     string          `json:"status"`
 	ReportedAt string          `json:"reported_at"`
 }
@@ -476,6 +492,32 @@ func (s *Store) migrate() error {
 					error TEXT NOT NULL DEFAULT ''
 				)`,
 			}, builtinAllowlistInserts()...),
+		},
+		{
+			version: 7,
+			stmts: []string{
+				`CREATE TABLE IF NOT EXISTS abuse_form_only_domains (
+					domain TEXT PRIMARY KEY,
+					source TEXT NOT NULL DEFAULT 'learned',
+					learned_at TEXT NOT NULL
+				)`,
+				`CREATE TABLE IF NOT EXISTS abuse_replies (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					message_id TEXT NOT NULL UNIQUE,
+					reported_domain TEXT NOT NULL DEFAULT '',
+					history_id INTEGER NOT NULL DEFAULT 0,
+					responder TEXT NOT NULL,
+					responder_domain TEXT NOT NULL,
+					target_address TEXT NOT NULL DEFAULT '',
+					subject TEXT NOT NULL,
+					snippet TEXT NOT NULL DEFAULT '',
+					outcome TEXT NOT NULL,
+					received_at TEXT NOT NULL,
+					created_at TEXT NOT NULL
+				)`,
+				`CREATE INDEX IF NOT EXISTS idx_abuse_replies_domain ON abuse_replies(reported_domain, outcome)`,
+				`CREATE INDEX IF NOT EXISTS idx_abuse_replies_outcome ON abuse_replies(outcome, received_at)`,
+			},
 		},
 	}
 
@@ -1333,6 +1375,252 @@ func (s *Store) ListAbuseHistory(limit int) ([]AbuseHistoryEntry, error) {
 		e.Deliveries = []AbuseDelivery{}
 		_ = json.Unmarshal([]byte(deliveriesJSON), &e.Deliveries)
 		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	replies, err := s.ListRecentAbuseReplies(500)
+	if err != nil {
+		return out, nil
+	}
+	byID := make(map[int64]int, len(out))
+	byDomain := make(map[string]int, len(out))
+	for i, e := range out {
+		byID[e.ID] = i
+		dom := strings.ToLower(e.RootDomain)
+		if _, exists := byDomain[dom]; !exists {
+			byDomain[dom] = i
+		}
+	}
+	for _, r := range replies {
+		if r.HistoryID > 0 {
+			if idx, ok := byID[r.HistoryID]; ok {
+				out[idx].Replies = append(out[idx].Replies, r)
+				continue
+			}
+		}
+		if dom := strings.ToLower(r.ReportedDomain); dom != "" {
+			if idx, ok := byDomain[dom]; ok {
+				out[idx].Replies = append(out[idx].Replies, r)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (s *Store) AddFormOnlyAbuseDomain(domain, source string) error {
+	clean := strings.ToLower(strings.TrimSpace(domain))
+	if clean == "" {
+		return nil
+	}
+	if source == "" {
+		source = "learned"
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.Exec(
+		`INSERT OR IGNORE INTO abuse_form_only_domains(domain, source, learned_at) VALUES(?, ?, ?)`,
+		clean, source, now,
+	)
+	return err
+}
+
+func (s *Store) DeleteFormOnlyAbuseDomain(domain string) error {
+	_, err := s.db.Exec(`DELETE FROM abuse_form_only_domains WHERE domain = ?`, strings.ToLower(strings.TrimSpace(domain)))
+	return err
+}
+
+func (s *Store) IsFormOnlyAbuseDomain(domain string) (bool, error) {
+	clean := strings.ToLower(strings.TrimSpace(domain))
+	if clean == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM abuse_form_only_domains WHERE domain = ?`, clean).Scan(&count)
+	return count > 0, err
+}
+
+func (s *Store) ListFormOnlyAbuseDomains() ([]string, error) {
+	rows, err := s.db.Query(`SELECT domain FROM abuse_form_only_domains ORDER BY domain ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var d string
+		if err := rows.Scan(&d); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) RecordAbuseReply(r AbuseReply) (bool, error) {
+	msgID := NormalizeMessageID(r.MessageID)
+	if msgID == "" {
+		return false, errors.New("message_id is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if r.ReceivedAt == "" {
+		r.ReceivedAt = now
+	}
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO abuse_replies(message_id, reported_domain, history_id, responder, responder_domain, target_address, subject, snippet, outcome, received_at, created_at)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		msgID, strings.ToLower(strings.TrimSpace(r.ReportedDomain)), r.HistoryID,
+		strings.ToLower(strings.TrimSpace(r.Responder)), strings.ToLower(strings.TrimSpace(r.ResponderDomain)),
+		strings.ToLower(strings.TrimSpace(r.TargetAddress)), r.Subject, r.Snippet, r.Outcome, r.ReceivedAt, now,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}
+
+func (s *Store) HasAbuseReply(messageID string) (bool, error) {
+	msgID := NormalizeMessageID(messageID)
+	if msgID == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM abuse_replies WHERE message_id = ?`, msgID).Scan(&count)
+	return count > 0, err
+}
+
+func (s *Store) CountAbuseBans() (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(DISTINCT CASE WHEN reported_domain != '' THEN lower(reported_domain) ELSE 'id:' || id END)
+		FROM abuse_replies WHERE outcome = 'action_taken'`).Scan(&count)
+	return count, err
+}
+
+func (s *Store) ListAbuseBans(limit int) ([]AbuseReply, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return s.queryAbuseReplies(`SELECT id, message_id, reported_domain, history_id, responder, responder_domain, target_address, subject, snippet, outcome, received_at
+		FROM abuse_replies WHERE outcome = 'action_taken' ORDER BY received_at DESC, id DESC LIMIT ?`, limit)
+}
+
+func (s *Store) ListRecentAbuseReplies(limit int) ([]AbuseReply, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	return s.queryAbuseReplies(`SELECT id, message_id, reported_domain, history_id, responder, responder_domain, target_address, subject, snippet, outcome, received_at
+		FROM abuse_replies ORDER BY received_at DESC, id DESC LIMIT ?`, limit)
+}
+
+func (s *Store) queryAbuseReplies(query string, args ...any) ([]AbuseReply, error) {
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AbuseReply{}
+	for rows.Next() {
+		var r AbuseReply
+		if err := rows.Scan(&r.ID, &r.MessageID, &r.ReportedDomain, &r.HistoryID, &r.Responder, &r.ResponderDomain, &r.TargetAddress, &r.Subject, &r.Snippet, &r.Outcome, &r.ReceivedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) FindAbuseDeliveryByMessageID(msgIDs []string) (historyID int64, reportedDomain, targetAddr string, found bool, err error) {
+	want := make(map[string]struct{}, len(msgIDs))
+	for _, id := range msgIDs {
+		if norm := NormalizeMessageID(id); norm != "" {
+			want[norm] = struct{}{}
+		}
+	}
+	if len(want) == 0 {
+		return 0, "", "", false, nil
+	}
+	rows, err := s.db.Query(`SELECT id, root_domain, deliveries_json FROM abuse_history ORDER BY id DESC LIMIT 500`)
+	if err != nil {
+		return 0, "", "", false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		var domain, deliveriesJSON string
+		if err := rows.Scan(&id, &domain, &deliveriesJSON); err != nil {
+			return 0, "", "", false, err
+		}
+		var deliveries []AbuseDelivery
+		if err := json.Unmarshal([]byte(deliveriesJSON), &deliveries); err != nil {
+			continue
+		}
+		for _, d := range deliveries {
+			if norm := NormalizeMessageID(d.MessageID); norm != "" {
+				if _, ok := want[norm]; ok {
+					return id, domain, d.Address, true, nil
+				}
+			}
+		}
+	}
+	return 0, "", "", false, rows.Err()
+}
+
+func (s *Store) FindLatestAbuseHistoryByDomain(reportedDomain string) (historyID int64, deliveries []AbuseDelivery, found bool, err error) {
+	clean := strings.ToLower(strings.TrimSpace(reportedDomain))
+	if clean == "" {
+		return 0, nil, false, nil
+	}
+	var deliveriesJSON string
+	err = s.db.QueryRow(
+		`SELECT id, deliveries_json FROM abuse_history WHERE root_domain = ? ORDER BY reported_at DESC, id DESC LIMIT 1`,
+		clean,
+	).Scan(&historyID, &deliveriesJSON)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil, false, nil
+	}
+	if err != nil {
+		return 0, nil, false, err
+	}
+	_ = json.Unmarshal([]byte(deliveriesJSON), &deliveries)
+	return historyID, deliveries, true, nil
+}
+
+func (s *Store) RecentAbuseTargetAddresses(days int) ([]string, error) {
+	if days <= 0 {
+		days = 60
+	}
+	since := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
+	rows, err := s.db.Query(`SELECT deliveries_json FROM abuse_history WHERE reported_at >= ? ORDER BY id DESC LIMIT 500`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seen := map[string]struct{}{}
+	var out []string
+	for rows.Next() {
+		var deliveriesJSON string
+		if err := rows.Scan(&deliveriesJSON); err != nil {
+			return nil, err
+		}
+		var deliveries []AbuseDelivery
+		if err := json.Unmarshal([]byte(deliveriesJSON), &deliveries); err != nil {
+			continue
+		}
+		for _, d := range deliveries {
+			addr := strings.ToLower(strings.TrimSpace(d.Address))
+			if addr == "" || !strings.Contains(addr, "@") {
+				continue
+			}
+			if _, ok := seen[addr]; ok {
+				continue
+			}
+			seen[addr] = struct{}{}
+			out = append(out, addr)
+		}
 	}
 	return out, rows.Err()
 }

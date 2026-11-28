@@ -23,6 +23,7 @@ struct HealthResponse: Codable, Sendable {
     var imapError: String
     var pairedDevices: Int
     var pendingAbuseCount: Int
+    var bannedCount: Int?
     var tlsFingerprint: String
 
     enum CodingKeys: String, CodingKey {
@@ -31,6 +32,7 @@ struct HealthResponse: Codable, Sendable {
         case imapError = "imap_error"
         case pairedDevices = "paired_devices"
         case pendingAbuseCount = "pending_abuse_count"
+        case bannedCount = "banned_count"
         case tlsFingerprint = "tls_fingerprint"
     }
 }
@@ -289,8 +291,38 @@ struct AbuseDelivery: Codable, Equatable, Sendable {
     var address: String
     var kind: String
     var reason: String
+    var messageID: String?
     var ok: Bool
     var error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case address, kind, reason, ok, error
+        case messageID = "message_id"
+    }
+}
+
+struct AbuseReply: Codable, Identifiable, Equatable, Sendable {
+    var id: Int64
+    var messageID: String
+    var reportedDomain: String
+    var historyID: Int64?
+    var responder: String
+    var responderDomain: String
+    var targetAddress: String?
+    var subject: String
+    var snippet: String
+    var outcome: String
+    var receivedAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case id, responder, subject, snippet, outcome
+        case messageID = "message_id"
+        case reportedDomain = "reported_domain"
+        case historyID = "history_id"
+        case responderDomain = "responder_domain"
+        case targetAddress = "target_address"
+        case receivedAt = "received_at"
+    }
 }
 
 struct AbuseHistoryEntry: Codable, Identifiable, Sendable {
@@ -300,11 +332,12 @@ struct AbuseHistoryEntry: Codable, Identifiable, Sendable {
     var subject: String
     var sender: String
     var deliveries: [AbuseDelivery]
+    var replies: [AbuseReply]?
     var status: String
     var reportedAt: String
 
     enum CodingKeys: String, CodingKey {
-        case id, subject, sender, deliveries, status
+        case id, subject, sender, deliveries, replies, status
         case rootDomain = "root_domain"
         case categoryID = "category_id"
         case reportedAt = "reported_at"
@@ -313,6 +346,28 @@ struct AbuseHistoryEntry: Codable, Identifiable, Sendable {
 
 struct AbuseHistoryResponse: Codable, Sendable {
     var entries: [AbuseHistoryEntry]
+    var bannedCount: Int?
+    var bans: [AbuseReply]?
+    var formOnlyDomains: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case entries, bans
+        case bannedCount = "banned_count"
+        case formOnlyDomains = "form_only_domains"
+    }
+}
+
+struct AbuseSyncResponse: Codable, Sendable {
+    var processed: Int
+    var archived: Int
+    var bansFound: Int
+    var bannedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case processed, archived
+        case bansFound = "bans_found"
+        case bannedCount = "banned_count"
+    }
 }
 
 struct MailingList: Codable, Identifiable, Equatable, Sendable {

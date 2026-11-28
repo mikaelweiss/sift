@@ -581,7 +581,11 @@ func (s *Scanner) classify(ctx context.Context, t classifyTask, progress *scanPr
 		msg.err = err
 		return
 	}
-	msg.decision, msg.err = t.batch.snap.Evaluate(ctx, msg.input)
+	if abuse.IsObviousAbuseReply(msg.input.Subject, msg.input.SenderEmail, msg.input.RawMessage) {
+		msg.decision = classifier.Decision{Action: "keep"}
+	} else {
+		msg.decision, msg.err = t.batch.snap.Evaluate(ctx, msg.input)
+	}
 
 	progress.mu.Lock()
 	job := &progress.job

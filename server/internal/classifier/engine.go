@@ -18,19 +18,22 @@ const maxBodySnippetLen = 2500
 var urlRegex = regexp.MustCompile(`https?://[^\s"'<>()]+`)
 
 type EmailInput struct {
-	UIDValidity  uint32
-	UID          uint32
-	MessageID    string
-	From         string
-	ReplyTo      string
-	SenderEmail  string
-	SenderDomain string
-	Subject      string
-	AuthResults  string
-	LinkDomains  []string
-	BodySnippet  string
-	EmailDate    time.Time
-	RawHeaders   string
+	UIDValidity   uint32
+	UID           uint32
+	MessageID     string
+	InReplyTo     string
+	References    string
+	AutoSubmitted string
+	From          string
+	ReplyTo       string
+	SenderEmail   string
+	SenderDomain  string
+	Subject       string
+	AuthResults   string
+	LinkDomains   []string
+	BodySnippet   string
+	EmailDate     time.Time
+	RawHeaders    string
 	// RawMessage is the fetched message prefix kept as report evidence.
 	RawMessage     string
 	DMARCPass      bool

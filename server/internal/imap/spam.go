@@ -9,25 +9,29 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 )
 
-// spamMailboxes names where spam goes and where the user's own deletions live.
+// spamMailboxes names the special folders Sift moves messages into.
 type spamMailboxes struct {
-	junk  string
-	trash string
+	junk    string
+	trash   string
+	archive string
 }
 
 func discoverSpamMailboxes(c *imapclient.Client) spamMailboxes {
-	boxes := spamMailboxes{junk: "Junk", trash: "Deleted Messages"}
+	boxes := spamMailboxes{junk: "Junk", trash: "Deleted Messages", archive: "Archive"}
 	list, err := c.List("", "*", nil).Collect()
 	if err != nil {
 		return boxes
 	}
-	junkFound, trashFound := false, false
+	junkFound, trashFound, archiveFound := false, false, false
 	for _, m := range list {
 		if !junkFound && hasAttr(m.Attrs, goimap.MailboxAttrJunk) {
 			boxes.junk, junkFound = m.Mailbox, true
 		}
 		if !trashFound && hasAttr(m.Attrs, goimap.MailboxAttrTrash) {
 			boxes.trash, trashFound = m.Mailbox, true
+		}
+		if !archiveFound && hasAttr(m.Attrs, goimap.MailboxAttrArchive) {
+			boxes.archive, archiveFound = m.Mailbox, true
 		}
 	}
 	for _, m := range list {
@@ -40,9 +44,29 @@ func discoverSpamMailboxes(c *imapclient.Client) spamMailboxes {
 			if !trashFound {
 				boxes.trash, trashFound = m.Mailbox, true
 			}
+		case "archive":
+			if !archiveFound {
+				boxes.archive, archiveFound = m.Mailbox, true
+			}
 		}
 	}
 	return boxes
+}
+
+// archiveMessages marks messages read and moves them to Archive.
+func archiveMessages(c *imapclient.Client, uids []goimap.UID, source string, boxes spamMailboxes) error {
+	if len(uids) == 0 || boxes.archive == "" || strings.EqualFold(source, boxes.archive) {
+		return nil
+	}
+	var uidSet goimap.UIDSet
+	for _, u := range uids {
+		uidSet.AddNum(u)
+	}
+	_ = c.Store(uidSet, &goimap.StoreFlags{Op: goimap.StoreFlagsAdd, Silent: true, Flags: []goimap.Flag{goimap.FlagSeen}}, nil).Close()
+	if _, err := c.Move(uidSet, boxes.archive).Wait(); err != nil {
+		return fmt.Errorf("move to %s: %w", boxes.archive, err)
+	}
+	return nil
 }
 
 // applySpamAction moves spam into Junk, which trains iCloud's filter, including spam sitting in Trash. A delete moves

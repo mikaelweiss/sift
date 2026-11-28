@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/mikaelweiss/sift/server/internal/db"
+	"github.com/mikaelweiss/sift/server/internal/jev"
 )
 
 type Candidate struct {
@@ -30,10 +31,12 @@ type Service struct {
 	store          *db.Store
 	resolver       *Resolver
 	sender         Sender
+	evaluator      jev.Evaluator
 	netcraft       func(ctx context.Context, reporterEmail, message string) error
 	nowFn          func() time.Time
 	sending        sync.WaitGroup
 	OnQueueChanged func(pendingCount int)
+	OnBanRecorded  func(bannedCount int)
 }
 
 func NewService(store *db.Store, resolver *Resolver, sender Sender) *Service {
@@ -190,20 +193,34 @@ func (s *Service) deliver(queueID int64) {
 
 	deliveries := make([]db.AbuseDelivery, 0, len(item.Targets))
 	for _, target := range item.Targets {
+		if target.Kind != KindNetcraft && !s.resolver.acceptsEmailReports(target.Address) {
+			continue
+		}
 		var sendErr error
+		var msgID string
 		if target.Kind == KindNetcraft {
 			sendErr = s.netcraft(ctx, cfg.IMAPUsername, item.Evidence)
 		} else {
 			subject, body := FormatReport(item, target)
+			msgID = NewReportMessageID(cfg.IMAPUsername)
+			attName := "evidence.eml"
+			attType := "message/rfc822"
+			// AWS Trust & Safety rejects .eml attachments but accepts .txt.
+			if isAWSTrustSafety(target.Address) {
+				attName = "evidence.txt"
+				attType = "text/plain"
+			}
 			sendErr = s.sender.Send(ctx, cfg, Mail{
-				To:             target.Address,
-				Subject:        subject,
-				Body:           body,
-				Attachment:     []byte(item.Evidence),
-				AttachmentName: "evidence.eml",
+				MessageID:             msgID,
+				To:                    target.Address,
+				Subject:               subject,
+				Body:                  body,
+				Attachment:            []byte(item.Evidence),
+				AttachmentName:        attName,
+				AttachmentContentType: attType,
 			})
 		}
-		d := db.AbuseDelivery{AbuseTarget: target, OK: sendErr == nil}
+		d := db.AbuseDelivery{AbuseTarget: target, MessageID: db.NormalizeMessageID(msgID), OK: sendErr == nil}
 		if sendErr != nil {
 			d.Error = sendErr.Error()
 		}

@@ -119,6 +119,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/abuse/{id}/approve", s.requireAuth(http.HandlerFunc(s.handleApproveAbuse)))
 	mux.Handle("POST /api/abuse/{id}/dismiss", s.requireAuth(http.HandlerFunc(s.handleDismissAbuse)))
 	mux.Handle("GET /api/abuse/history", s.requireAuth(http.HandlerFunc(s.handleAbuseHistory)))
+	mux.Handle("POST /api/abuse/sync", s.requireAuth(http.HandlerFunc(s.handleSyncAbuseReplies)))
+	mux.Handle("DELETE /api/abuse/form-only/{domain}", s.requireAuth(http.HandlerFunc(s.handleDeleteFormOnlyDomain)))
 
 	mux.Handle("GET /api/events", s.requireAuth(s.hub))
 
@@ -153,6 +155,7 @@ func (s *Server) BuildHealthPayload() map[string]any {
 	}
 	pairedCount, _ := s.store.CountPairedDevices()
 	queue, _ := s.store.ListAbuseQueue()
+	bannedCount, _ := s.store.CountAbuseBans()
 	return map[string]any{
 		"version":             s.version,
 		"os":                  runtime.GOOS,
@@ -161,6 +164,7 @@ func (s *Server) BuildHealthPayload() map[string]any {
 		"imap_error":          imapSnap.LastError,
 		"paired_devices":      pairedCount,
 		"pending_abuse_count": len(queue),
+		"banned_count":        bannedCount,
 		"tls_fingerprint":     s.tlsFingerprint,
 	}
 }
@@ -766,7 +770,48 @@ func (s *Server) handleAbuseHistory(w http.ResponseWriter, _ *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": entries})
+	bannedCount, _ := s.store.CountAbuseBans()
+	bans, _ := s.store.ListAbuseBans(50)
+	if bans == nil {
+		bans = []db.AbuseReply{}
+	}
+	formOnly, _ := s.store.ListFormOnlyAbuseDomains()
+	if formOnly == nil {
+		formOnly = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"entries":           entries,
+		"banned_count":      bannedCount,
+		"bans":              bans,
+		"form_only_domains": formOnly,
+	})
+}
+
+func (s *Server) handleSyncAbuseReplies(w http.ResponseWriter, r *http.Request) {
+	if s.abuseSvc == nil {
+		writeError(w, http.StatusServiceUnavailable, "abuse service unavailable")
+		return
+	}
+	res, err := imap.SyncAbuseReplies(r.Context(), s.store, s.abuseSvc, 90)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.hub.Publish("health", s.BuildHealthPayload())
+	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) handleDeleteFormOnlyDomain(w http.ResponseWriter, r *http.Request) {
+	domain := strings.TrimSpace(r.PathValue("domain"))
+	if domain == "" {
+		writeError(w, http.StatusBadRequest, "domain is required")
+		return
+	}
+	if err := s.store.DeleteFormOnlyAbuseDomain(domain); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleListAbuseQueue(w http.ResponseWriter, _ *http.Request) {

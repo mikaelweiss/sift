@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -23,11 +24,24 @@ const (
 )
 
 type Mail struct {
-	To             string
-	Subject        string
-	Body           string
-	Attachment     []byte
-	AttachmentName string
+	MessageID             string
+	To                    string
+	Subject               string
+	Body                  string
+	Attachment            []byte
+	AttachmentName        string
+	AttachmentContentType string
+}
+
+// NewReportMessageID generates an RFC 5322 Message-ID tagged for Sift abuse reply correlation.
+func NewReportMessageID(from string) string {
+	buf := make([]byte, 12)
+	_, _ = rand.Read(buf)
+	domain := "sift.local"
+	if _, d, ok := strings.Cut(strings.TrimSpace(from), "@"); ok && d != "" {
+		domain = strings.ToLower(d)
+	}
+	return fmt.Sprintf("<sift-abuse-%s@%s>", hex.EncodeToString(buf), domain)
 }
 
 type Sender interface {
@@ -106,9 +120,12 @@ func (s *SMTPSender) throttle(ctx context.Context) error {
 	return nil
 }
 
-// BuildMessage writes a plain text report, with the evidence attached as message/rfc822 when present.
+// BuildMessage writes a plain text report, with the evidence attached as message/rfc822 (or text/plain) when present.
 func BuildMessage(from string, m Mail) []byte {
 	var b strings.Builder
+	if m.MessageID != "" {
+		b.WriteString("Message-ID: " + m.MessageID + "\r\n")
+	}
 	b.WriteString("From: " + from + "\r\n")
 	b.WriteString("To: " + m.To + "\r\n")
 	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", m.Subject) + "\r\n")
@@ -127,13 +144,31 @@ func BuildMessage(from string, m Mail) []byte {
 	b.WriteString("Content-Type: text/plain; charset=UTF-8\r\n\r\n")
 	b.WriteString(body + "\r\n")
 	b.WriteString("--" + boundary + "\r\n")
-	b.WriteString("Content-Type: message/rfc822; name=\"" + m.AttachmentName + "\"\r\n")
-	b.WriteString("Content-Disposition: attachment; filename=\"" + m.AttachmentName + "\"\r\n")
-	// RFC 2046 allows only 7bit, 8bit or binary for message/rfc822, so the original goes in unencoded.
-	b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
-	b.WriteString(strings.TrimRight(toCRLF(string(m.Attachment)), "\r\n") + "\r\n")
+	if strings.EqualFold(m.AttachmentContentType, "text/plain") {
+		b.WriteString("Content-Type: text/plain; charset=UTF-8; name=\"" + m.AttachmentName + "\"\r\n")
+		b.WriteString("Content-Disposition: attachment; filename=\"" + m.AttachmentName + "\"\r\n")
+		b.WriteString("Content-Transfer-Encoding: base64\r\n\r\n")
+		b.WriteString(wrapBase64(m.Attachment))
+	} else {
+		b.WriteString("Content-Type: message/rfc822; name=\"" + m.AttachmentName + "\"\r\n")
+		b.WriteString("Content-Disposition: attachment; filename=\"" + m.AttachmentName + "\"\r\n")
+		// RFC 2046 allows only 7bit, 8bit or binary for message/rfc822, so the original goes in unencoded.
+		b.WriteString("Content-Transfer-Encoding: 8bit\r\n\r\n")
+		b.WriteString(strings.TrimRight(toCRLF(string(m.Attachment)), "\r\n") + "\r\n")
+	}
 	b.WriteString("--" + boundary + "--\r\n")
 	return []byte(b.String())
+}
+
+func wrapBase64(data []byte) string {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	var b strings.Builder
+	for i := 0; i < len(encoded); i += 76 {
+		end := min(i+76, len(encoded))
+		b.WriteString(encoded[i:end])
+		b.WriteString("\r\n")
+	}
+	return b.String()
 }
 
 func toCRLF(s string) string {

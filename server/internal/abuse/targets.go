@@ -39,14 +39,15 @@ var emailServiceAbuse = map[string]string{
 
 // formOnlyAbuseDomains run abuse desks that discard emailed reports and auto-reply asking for their web form.
 var formOnlyAbuseDomains = map[string]struct{}{
-	"cloudflare.com": {}, "ovh.ca": {}, "ovh.com": {}, "ovh.net": {}, "ovh.us": {}, "ovhcloud.com": {},
-	"realtimeregister.com": {},
+	"cloudflare.com": {}, "dynadot.com": {}, "openprovider.com": {}, "openprovider.nl": {},
+	"ovh.ca": {}, "ovh.com": {}, "ovh.net": {}, "ovh.us": {}, "ovhcloud.com": {},
+	"realtimeregister.com": {}, "registrar.eu": {},
 }
 
 // linkSkipDomains appear in legitimate and spam mail alike, so reporting their hosts would only add noise.
 var linkSkipDomains = map[string]struct{}{
 	"facebook.com": {}, "googleapis.com": {}, "gstatic.com": {}, "icloud.com": {}, "instagram.com": {},
-	"twitter.com": {}, "w3.org": {}, "x.com": {}, "youtube.com": {},
+	"twitter.com": {}, "w3.org": {}, "x.com": {}, "youtube.com": {}, "yusercontent.com": {},
 }
 
 var (
@@ -59,6 +60,9 @@ var (
 // ResolveTargets lists every party that can act on this spam. Lookups that fail are skipped so one dead RDAP server
 // does not block the rest.
 func (r *Resolver) ResolveTargets(ctx context.Context, c Candidate, headers, sendingIP, rootDomain string) []db.AbuseTarget {
+	services := emailServicesUsed(headers)
+	_, hasAmazonSES := services["amazonses.com"]
+
 	var targets []db.AbuseTarget
 	seen := map[string]struct{}{}
 	add := func(kind, reason string, addresses ...string) {
@@ -67,7 +71,11 @@ func (r *Resolver) ResolveTargets(ctx context.Context, c Candidate, headers, sen
 			if clean == "" {
 				continue
 			}
-			if kind != KindNetcraft && (!isValidEmail(clean) || !acceptsEmailReports(clean)) {
+			if kind != KindNetcraft && (!isValidEmail(clean) || !r.acceptsEmailReports(clean)) {
+				continue
+			}
+			// AWS routes any report with amazonses.com headers to email-abuse@amazon.com, so skip AWS Trust & Safety.
+			if hasAmazonSES && isAWSTrustSafety(clean) {
 				continue
 			}
 			if _, dup := seen[clean]; dup {
@@ -84,7 +92,6 @@ func (r *Resolver) ResolveTargets(ctx context.Context, c Candidate, headers, sen
 	if rootDomain != "" && !IsSharedMailProvider(rootDomain) {
 		add(KindRegistrar, fmt.Sprintf("Registrar for %s", rootDomain), r.contacts(ctx, "domain", rootDomain)...)
 	}
-	services := emailServicesUsed(headers)
 	for _, service := range slices.Sorted(maps.Keys(services)) {
 		add(KindEmailService, fmt.Sprintf("Email service used to send it (%s)", service), services[service])
 	}
@@ -111,10 +118,30 @@ func (r *Resolver) ResolveTargets(ctx context.Context, c Candidate, headers, sen
 	return targets
 }
 
+func (r *Resolver) acceptsEmailReports(address string) bool {
+	if !acceptsEmailReports(address) {
+		return false
+	}
+	if r != nil && r.store != nil {
+		_, domain, _ := strings.Cut(strings.ToLower(strings.TrimSpace(address)), "@")
+		if learned, err := r.store.IsFormOnlyAbuseDomain(RootDomain(domain)); err == nil && learned {
+			return false
+		}
+	}
+	return true
+}
+
 func acceptsEmailReports(address string) bool {
-	_, domain, _ := strings.Cut(address, "@")
+	_, domain, _ := strings.Cut(strings.ToLower(strings.TrimSpace(address)), "@")
 	_, formOnly := formOnlyAbuseDomains[RootDomain(domain)]
 	return !formOnly
+}
+
+func isAWSTrustSafety(address string) bool {
+	clean := strings.ToLower(strings.TrimSpace(address))
+	_, domain, _ := strings.Cut(clean, "@")
+	root := RootDomain(domain)
+	return root == "aws.com" || root == "amazonaws.com"
 }
 
 func (r *Resolver) contacts(ctx context.Context, kind, value string) []string {

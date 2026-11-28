@@ -157,6 +157,9 @@ func runServe(args []string) {
 	abuseSvc.OnQueueChanged = func(pendingCount int) {
 		hub.Publish("abuse_queue", map[string]int{"pending_count": pendingCount})
 	}
+	abuseSvc.OnBanRecorded = func(_ int) {
+		hub.Publish("health", apiServer.BuildHealthPayload())
+	}
 	watcher.OnEventProcessed = func(ev db.EmailEvent) {
 		hub.Publish("email_processed", ev)
 	}

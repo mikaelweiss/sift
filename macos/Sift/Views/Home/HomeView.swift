@@ -76,13 +76,33 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(appState.totalBlocked)")
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                        Text(appState.totalBlocked == 1 ? "spam email blocked" : "spam emails blocked")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                    HStack(alignment: .center, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text("\(appState.totalBlocked)")
+                                .font(.system(size: 32, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                            Text(appState.totalBlocked == 1 ? "spam email blocked" : "spam emails blocked")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        if appState.bannedCount > 0 {
+                            Button {
+                                appState.openAbuseReview(showSent: true)
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "checkmark.shield.fill")
+                                        .foregroundStyle(.green)
+                                    Text("\(appState.bannedCount) \(appState.bannedCount == 1 ? "spammer banned" : "spammers banned")")
+                                        .font(.caption.weight(.semibold))
+                                        .monospacedDigit()
+                                }
+                                .padding(.horizontal, 9)
+                                .padding(.vertical, 4)
+                                .background(Color.green.opacity(0.14), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help("View confirmed bans and takedowns from your abuse reports")
+                        }
                     }
                     Text(timeframeSubtitle)
                         .font(.caption)

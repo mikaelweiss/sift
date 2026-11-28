@@ -2,7 +2,6 @@ import SwiftUI
 
 struct MainTabView: View {
     @Environment(AppState.self) private var appState
-    @State private var showAbuseReview = false
     @State private var showJunk = false
     @State private var showMailingLists = false
 
@@ -43,7 +42,7 @@ struct MainTabView: View {
 
                     ToolbarItemGroup(placement: .primaryAction) {
                         Button {
-                            showAbuseReview = true
+                            appState.openAbuseReview(showSent: !hasQueuedDomains && appState.bannedCount > 0)
                         } label: {
                             if hasQueuedDomains {
                                 HStack(spacing: 4) {
@@ -84,8 +83,8 @@ struct MainTabView: View {
                         .help("Settings (⌘,)")
                     }
                 }
-                .sheet(isPresented: $showAbuseReview) {
-                    AbuseReviewSheet()
+                .sheet(isPresented: $bindableState.showAbuseReview) {
+                    AbuseReviewSheet(initialShowSent: appState.abuseReviewShowSent)
                         .environment(appState)
                 }
                 .sheet(isPresented: $showJunk) {

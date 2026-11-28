@@ -21,6 +21,7 @@ All `/api/*` endpoints require `Authorization: Bearer <device_token>` except:
     "imap_error": "",
     "paired_devices": 1,
     "pending_abuse_count": 2,
+    "banned_count": 2,
     "tls_fingerprint": "<sha256-hex>"
   }
   ```
@@ -105,7 +106,9 @@ All `/api/*` endpoints require `Authorization: Bearer <device_token>` except:
 - `GET /api/abuse/queue` -> `{"items": [AbuseQueueItem]}` (`status` is `pending` or `sending`)
 - `POST /api/abuse/{id}/approve` -> `202 Accepted` (`{"status": "sending"}`); delivery runs in the background and lands in history
 - `POST /api/abuse/{id}/dismiss` -> `204 No Content`
-- `GET /api/abuse/history` -> `{"entries": [AbuseHistoryEntry]}` (latest 50, each with per-recipient `deliveries` and `status` of `sent`, `partial` or `failed`)
+- `GET /api/abuse/history` -> `{"entries": [AbuseHistoryEntry], "banned_count": N, "bans": [AbuseReply], "form_only_domains": [string]}` (latest 50, each with per-recipient `deliveries`, linked `replies`, and `status` of `sent`, `partial` or `failed`)
+- `POST /api/abuse/sync` -> `{"processed": N, "archived": M, "bans_found": K, "banned_count": T}` (scans recent INBOX and Archive for abuse replies, records bans and learned form-only desks, and archives inbox replies)
+- `DELETE /api/abuse/form-only/{domain}` -> `204 No Content` (removes an auto-learned form-only abuse domain)
 
 ### Live Event Stream (SSE)
 - `GET /api/events` (`text/event-stream`, authenticated via `Authorization: Bearer <token>`)

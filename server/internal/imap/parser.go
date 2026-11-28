@@ -43,6 +43,9 @@ func ParseRawMessage(uidValidity, uid uint32, internalDate time.Time, raw []byte
 	replyTo := decodeHeader(msg.Header.Get("Reply-To"))
 	subject := decodeHeader(msg.Header.Get("Subject"))
 	messageID := strings.TrimSpace(msg.Header.Get("Message-ID"))
+	inReplyTo := strings.TrimSpace(msg.Header.Get("In-Reply-To"))
+	references := strings.TrimSpace(msg.Header.Get("References"))
+	autoSubmitted := strings.TrimSpace(msg.Header.Get("Auto-Submitted"))
 	authResults := strings.Join(msg.Header["Authentication-Results"], " ; ")
 	senderEmail, senderDomain := classifier.ParseSenderAddress(from)
 
@@ -61,6 +64,9 @@ func ParseRawMessage(uidValidity, uid uint32, internalDate time.Time, raw []byte
 		DMARCPass:      dmarcPassFor(msg.Header["Authentication-Results"], senderDomain),
 		UnsubscribeURL: unsubscribeURL,
 		MessageID:      messageID,
+		InReplyTo:      inReplyTo,
+		References:     references,
+		AutoSubmitted:  autoSubmitted,
 		From:           from,
 		ReplyTo:        replyTo,
 		SenderEmail:    senderEmail,
